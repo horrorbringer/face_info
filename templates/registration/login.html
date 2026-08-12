@@ -1,0 +1,2 @@
+{% extends "base.html" %}{% block content %}<div class="card mx-auto" style="max-width: 28rem"><div class="card-body"><h1 class="h3">Staff sign in</h1><form method="post">{% csrf_token %}{{ form.as_p }}<button class="btn btn-primary w-100">Sign in</button></form></div></div>{% endblock %}
+

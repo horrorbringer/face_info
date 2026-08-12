@@ -1,0 +1,10 @@
+Django>=5.1,<6.0
+psycopg[binary]>=3.2
+pgvector>=0.3.6
+numpy>=2.0
+opencv-python-headless>=4.10
+gunicorn>=23.0
+whitenoise>=6.8
+# Install only after selecting a model whose licence permits your use:
+insightface>=0.7.3
+onnxruntime>=1.20

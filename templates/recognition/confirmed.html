@@ -1,0 +1,2 @@
+{% extends "base.html" %}{% block content %}<div class="card border-success mx-auto" style="max-width:32rem"><div class="card-body"><h1 class="h3 text-success">Identity confirmed</h1><p class="fs-4 mb-1">{{ student.full_name }}</p><p>Student ID: {{ student.student_id }}<br>Class/year: {{ student.class_year|default:"Not recorded" }}</p><a href="/" class="btn btn-primary">New lookup</a></div></div>{% endblock %}
+

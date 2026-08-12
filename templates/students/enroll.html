@@ -1,0 +1,2 @@
+{% extends "base.html" %}{% block content %}<h1 class="h3">Enroll {{ student.full_name }}</h1><p>Student ID: {{ student.student_id }}. Upload a temporary camera frame only after written consent is recorded.</p><form method="post" enctype="multipart/form-data">{% csrf_token %}{{ form.as_p }}<button class="btn btn-primary">Create biometric template</button></form><form class="mt-4" method="post" action="{% url 'students:revoke' student.student_id %}">{% csrf_token %}<button class="btn btn-outline-danger">Revoke consent and delete template</button></form>{% endblock %}
+
