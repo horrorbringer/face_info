@@ -18,7 +18,7 @@ python manage.py createsuperuser
 python manage.py runserver
 ```
 
-Open `http://127.0.0.1:8000/admin/` to create staff users and import students. For containers, copy `.env.example` to `.env`, set a secret, then run `docker compose up --build`.
+Open `http://127.0.0.1:8000/admin/` to create staff users and import students. For containers, copy `.env.example` to `.env`, set a secret, then run `docker compose up --build`. Keep `DJANGO_DEBUG=True` for local HTTP Docker use; set it to `False` only when the deployed service is behind HTTPS.
 
 ## Important safety and licensing requirements
 
