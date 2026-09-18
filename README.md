@@ -6,19 +6,83 @@ A consent-first, staff-operated student face lookup pilot. It is **not** attenda
 
 - Django templates, Bootstrap, and a small browser camera script
 - PostgreSQL (the Compose image includes pgvector for production scaling)
+- Redis + Celery for background absence notifications
 - Optional self-hosted ONNX face-recognition provider
 
-## Run locally
+## Documentation
 
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python manage.py migrate
-python manage.py createsuperuser
-python manage.py runserver
-```
+- **[Architecture & Business Logic Guide](docs/architecture_and_business_logic.md)**: System diagrams, data entity models, end-to-end flows (QR, Face, Absence alerts), API endpoints table, and configurations.
+- **[System Specification](docs/smart_attendance_system_spec.md)**: Detailed phase requirements and product scope.
 
-Open `http://127.0.0.1:8000/admin/` to create staff users and import students. For containers, copy `.env.example` to `.env`, set a secret, then run `docker compose up --build`. Keep `DJANGO_DEBUG=True` for local HTTP Docker use; set it to `False` only when the deployed service is behind HTTPS.
+
+## Prerequisites
+
+- **Python 3.10+** (Django 5.1+ requires Python 3.10 or higher). If on macOS with Homebrew, make sure Homebrew's bin directory is in your `$PATH`.
+
+## How to Run
+
+### Method 1: Run Locally (Fastest - uses local SQLite by default)
+
+When `DATABASE_URL` is omitted, Django defaults to a local SQLite database (`db.sqlite3`), requiring no external database service.
+
+1. **Create and activate a virtual environment:**
+
+   Using standard Python venv:
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install -r requirements.txt
+   ```
+
+   Or using `uv`:
+   ```bash
+   uv venv .venv --python 3.12
+   source .venv/bin/activate
+   uv pip install -r requirements.txt
+   ```
+
+2. **Run database migrations:**
+   ```bash
+   python manage.py migrate
+   ```
+
+3. **Create an initial staff/admin account:**
+   ```bash
+   python manage.py createsuperuser
+   ```
+
+4. **Start the development server:**
+   ```bash
+   python manage.py runserver
+   ```
+
+5. **Access the application:**
+   - **Admin portal:** [http://127.0.0.1:8000/admin/](http://127.0.0.1:8000/admin/) (log in to create staff users and manage students)
+   - **Face Scanner / Kiosk:** [http://127.0.0.1:8000/](http://127.0.0.1:8000/)
+   - **Manual Student Lookup:** [http://127.0.0.1:8000/students/](http://127.0.0.1:8000/students/)
+
+---
+
+### Method 2: Run with Docker Compose (PostgreSQL + pgvector)
+
+1. **Create your environment configuration:**
+   ```bash
+   cp .env.example .env
+   ```
+   *(Keep `DJANGO_DEBUG=True` for local HTTP Docker testing; set to `False` only behind HTTPS)*
+
+2. **Build and start services:**
+   ```bash
+   docker compose up --build
+   ```
+
+3. **Apply migrations and create a superuser (in a second terminal):**
+   ```bash
+   docker compose exec web python manage.py migrate
+   docker compose exec web python manage.py createsuperuser
+   ```
+
+4. **Access the application:** [http://127.0.0.1:8000/](http://127.0.0.1:8000/)
 
 ## Important safety and licensing requirements
 

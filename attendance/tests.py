@@ -1,0 +1,226 @@
+import datetime
+from unittest.mock import patch
+from django.contrib.auth.models import User
+from django.test import TestCase
+from django.utils import timezone
+from rest_framework import status
+from rest_framework.test import APIClient
+
+from students.models import Student
+from .models import AlertLog, AttendanceRecord, ClassRoom, Session, StudentFace, Teacher
+from .tasks import send_absence_alerts_for_session
+
+
+class SmartAttendanceTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+
+        # Users
+        self.teacher_user = User.objects.create_user(username="teacher1", password="password123")
+        self.teacher = Teacher.objects.create(user=self.teacher_user, name="Professor Smith", email="smith@school.edu")
+
+        self.student_user = User.objects.create_user(username="student1", password="password123")
+        self.classroom = ClassRoom.objects.create(name="CS101", teacher=self.teacher)
+
+        self.student = Student.objects.create(
+            user=self.student_user,
+            student_id="STU001",
+            full_name="Alice Johnson",
+            class_room=self.classroom,
+            guardian_contact="alice_parent@example.com",
+            is_active=True,
+            consent_given_at=timezone.now(),
+        )
+
+        self.student2 = Student.objects.create(
+            student_id="STU002",
+            full_name="Bob Brown",
+            class_room=self.classroom,
+            guardian_contact="123456789",  # Telegram chat ID format
+            is_active=True,
+            consent_given_at=timezone.now(),
+        )
+
+        # Today's Session
+        now = timezone.localtime()
+        self.session = Session.objects.create(
+            class_room=self.classroom,
+            date=now.date(),
+            start_time=now.time(),
+            end_time=(now + datetime.timedelta(hours=1)).time(),
+            qr_token="valid_qr_test_token",
+            qr_token_expires_at=now + datetime.timedelta(minutes=15),
+        )
+
+    # ------------------------------------------------------------------
+    # Phase 1: Models & Auth
+    # ------------------------------------------------------------------
+    def test_login_and_student_profile(self):
+        # Login as student
+        response = self.client.post("/api/auth/login/", {"username": "student1", "password": "password123"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        token = response.data["token"]
+        self.assertEqual(response.data["role"], "student")
+        self.assertEqual(response.data["student"]["student_id"], "STU001")
+
+        # Get profile
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token}")
+        me_resp = self.client.get("/api/students/me/")
+        self.assertEqual(me_resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(me_resp.data["student_id"], "STU001")
+        self.assertEqual(me_resp.data["class_room"]["name"], "CS101")
+
+    def test_teacher_login(self):
+        response = self.client.post("/api/auth/login/", {"username": "teacher1", "password": "password123"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["role"], "teacher")
+        self.assertEqual(response.data["teacher"]["name"], "Professor Smith")
+
+    # ------------------------------------------------------------------
+    # Phase 2: QR Check-In & History
+    # ------------------------------------------------------------------
+    def test_qr_checkin_flow(self):
+        self.client.force_authenticate(user=self.student_user)
+
+        # Successful QR check-in
+        checkin_resp = self.client.post("/api/attendance/checkin/qr/", {"qr_token": "valid_qr_test_token"})
+        self.assertEqual(checkin_resp.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(checkin_resp.data["record"]["status"], "present")
+
+        # Re-checkin should be idempotent and return 200
+        checkin_resp2 = self.client.post("/api/attendance/checkin/qr/", {"qr_token": "valid_qr_test_token"})
+        self.assertEqual(checkin_resp2.status_code, status.HTTP_200_OK)
+
+        # Check student attendance history
+        history_resp = self.client.get("/api/attendance/history/")
+        self.assertEqual(history_resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(history_resp.data), 1)
+        self.assertEqual(history_resp.data[0]["method"], "qr")
+
+    def test_expired_qr_code(self):
+        self.session.qr_token_expires_at = timezone.now() - datetime.timedelta(minutes=1)
+        self.session.save()
+
+        self.client.force_authenticate(user=self.student_user)
+        resp = self.client.post("/api/attendance/checkin/qr/", {"qr_token": "valid_qr_test_token"})
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("expired", resp.data["error"])
+
+    def test_teacher_rotate_qr(self):
+        self.client.force_authenticate(user=self.teacher_user)
+        rotate_resp = self.client.post(f"/api/teacher/sessions/{self.session.id}/qr/", {"expiry_minutes": 5})
+        self.assertEqual(rotate_resp.status_code, status.HTTP_200_OK)
+        self.assertNotEqual(rotate_resp.data["qr_token"], "valid_qr_test_token")
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.qr_token, rotate_resp.data["qr_token"])
+
+    # ------------------------------------------------------------------
+    # Phase 3: Absence Alerts & Idempotency
+    # ------------------------------------------------------------------
+    @patch("attendance.tasks.send_mail")
+    @patch("attendance.tasks.send_telegram_alert")
+    def test_absence_alert_task(self, mock_tg, mock_email):
+        # Alice Johnson checks in
+        AttendanceRecord.objects.create(student=self.student, session=self.session, status="present", method="qr")
+
+        # Bob Brown (student2) has NOT checked in
+        result = send_absence_alerts_for_session(self.session.id)
+        self.assertEqual(result["sent_count"] + result["failed_count"], 1)
+
+        # Verify Bob was recorded absent
+        bob_record = AttendanceRecord.objects.get(student=self.student2, session=self.session)
+        self.assertEqual(bob_record.status, "absent")
+
+        # Verify AlertLog was created
+        alert = AlertLog.objects.get(student=self.student2, session=self.session)
+        self.assertIn(alert.status, ["sent", "failed"])
+
+        # Re-running task should be idempotent (no duplicate sends)
+        result2 = send_absence_alerts_for_session(self.session.id)
+        self.assertEqual(result2["sent_count"], 0)
+
+    # ------------------------------------------------------------------
+    # Phase 4: Face Recognition (StudentFace & Matching)
+    # ------------------------------------------------------------------
+    def test_face_checkin_matching(self):
+        dummy_vector = [0.1] * 512
+        StudentFace.objects.create(student=self.student, embedding=dummy_vector)
+
+        self.client.force_authenticate(user=self.teacher_user)
+
+        with patch("recognition.services.embedding_from_upload") as mock_embed:
+            # Mock image upload matching dummy_vector
+            mock_embed.return_value = (dummy_vector, "approved-onnx-model")
+
+            from django.core.files.uploadedfile import SimpleUploadedFile
+            fake_img = SimpleUploadedFile("face.jpg", b"fake image bytes", content_type="image/jpeg")
+
+            resp = self.client.post(
+                "/api/attendance/checkin/face/",
+                {"image": fake_img, "session_id": self.session.id},
+                format="multipart"
+            )
+            self.assertEqual(resp.status_code, status.HTTP_200_OK)
+            self.assertTrue(resp.data["matched"])
+            self.assertEqual(resp.data["student_id"], "STU001")
+
+    def test_face_checkin_low_confidence_rejection(self):
+        dummy_vector = [0.1] * 512
+        diff_vector = [-0.1] * 512
+        StudentFace.objects.create(student=self.student, embedding=dummy_vector)
+
+        self.client.force_authenticate(user=self.teacher_user)
+
+        with patch("recognition.services.embedding_from_upload") as mock_embed:
+            mock_embed.return_value = (diff_vector, "approved-onnx-model")
+            from django.core.files.uploadedfile import SimpleUploadedFile
+            fake_img = SimpleUploadedFile("face.jpg", b"fake image bytes", content_type="image/jpeg")
+
+            resp = self.client.post(
+                "/api/attendance/checkin/face/",
+                {"image": fake_img, "session_id": self.session.id},
+                format="multipart"
+            )
+            self.assertEqual(resp.status_code, status.HTTP_200_OK)
+            self.assertFalse(resp.data["matched"])
+            self.assertIn("not recognized", resp.data["message"])
+
+    # ------------------------------------------------------------------
+    # Phase 5 & 6: Reports, Overrides, and Audits
+    # ------------------------------------------------------------------
+    def test_teacher_manual_override(self):
+        record = AttendanceRecord.objects.create(
+            student=self.student,
+            session=self.session,
+            status="absent",
+            method="manual"
+        )
+        self.client.force_authenticate(user=self.teacher_user)
+
+        patch_resp = self.client.patch(
+            f"/api/teacher/attendance/{record.id}/",
+            {"status": "present"}
+        )
+        self.assertEqual(patch_resp.status_code, status.HTTP_200_OK)
+        record.refresh_from_db()
+        self.assertEqual(record.status, "present")
+        self.assertEqual(record.edited_by, self.teacher_user)
+
+    def test_reports_api(self):
+        AttendanceRecord.objects.create(student=self.student, session=self.session, status="present", method="qr")
+        AttendanceRecord.objects.create(student=self.student2, session=self.session, status="absent", method="manual")
+
+        self.client.force_authenticate(user=self.teacher_user)
+
+        # Class report
+        class_rep = self.client.get(f"/api/reports/class/{self.classroom.id}/")
+        self.assertEqual(class_rep.status_code, status.HTTP_200_OK)
+        self.assertEqual(class_rep.data["total_attendance_records"], 2)
+        self.assertEqual(class_rep.data["present_count"], 1)
+        self.assertEqual(class_rep.data["absent_count"], 1)
+
+        # Student report
+        stu_rep = self.client.get(f"/api/reports/student/{self.student.id}/")
+        self.assertEqual(stu_rep.status_code, status.HTTP_200_OK)
+        self.assertEqual(stu_rep.data["present_count"], 1)
+        self.assertEqual(stu_rep.data["attendance_rate"], 100.0)
