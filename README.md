@@ -11,6 +11,7 @@ A consent-first, staff-operated student face lookup pilot. It is **not** attenda
 
 ## Documentation
 
+- **[System Capabilities](docs/system_capabilities.md)**: Feature list, check-in methods, background notification workflows, and client integrations.
 - **[Architecture & Business Logic Guide](docs/architecture_and_business_logic.md)**: System diagrams, data entity models, end-to-end flows (QR, Face, Absence alerts), API endpoints table, and configurations.
 - **[System Specification](docs/smart_attendance_system_spec.md)**: Detailed phase requirements and product scope.
 
