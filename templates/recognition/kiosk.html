@@ -113,6 +113,7 @@
 
 <!-- Hidden Canvas and CSRF Form for Frame Processing -->
 <canvas id="frame" class="d-none"></canvas>
+<canvas id="frame-prev" class="d-none"></canvas>
 <form id="csrf-form" class="d-none">
   {% csrf_token %}
 </form>
@@ -129,6 +130,7 @@
 (function() {
   const video = document.getElementById('camera');
   const canvas = document.getElementById('frame');
+  const canvasPrev = document.getElementById('frame-prev');
   const autoScanToggle = document.getElementById('auto-scan-toggle');
   const manualScanBtn = document.getElementById('manual-scan-btn');
   const statusBadge = document.getElementById('status-badge');
@@ -252,7 +254,7 @@
   retryCamera.addEventListener('click', initCamera);
   initCamera();
 
-  // Capture current camera frame and send for auto-verification
+  // Capture dual frames with 180ms delay to evaluate natural micro-motion vs static photo
   function captureAndVerify() {
     if (isScanning || !video.videoWidth || !video.videoHeight) return;
     if (!matchOverlay.classList.contains('d-none') || !spoofOverlay.classList.contains('d-none')) return;
@@ -260,33 +262,79 @@
     isScanning = true;
     scanline.classList.remove('d-none');
     statusBadge.className = 'badge bg-primary px-3 py-2 shadow-sm fs-6';
-    statusBadge.textContent = '🟡 Checking Face & Liveness...';
+    statusBadge.textContent = '🟡 Analyzing Physiological Motion...';
     reticle.style.borderColor = '#0d6efd';
 
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(video, 0, 0);
+    // 1. Capture Frame 1 (Previous)
+    canvasPrev.width = video.videoWidth;
+    canvasPrev.height = video.videoHeight;
+    const ctxPrev = canvasPrev.getContext('2d');
+    ctxPrev.drawImage(video, 0, 0);
 
-    canvas.toBlob(blob => {
-      if (!blob) {
+    // 2. Sample 180ms later to detect natural human physiological movement
+    setTimeout(() => {
+      if (!video.videoWidth || !video.videoHeight) {
         isScanning = false;
         scanline.classList.add('d-none');
         return;
       }
 
-      const formData = new FormData();
-      formData.append('image', blob, 'scan.jpg');
-      formData.append('format', 'json');
+      // 3. Capture Frame 2 (Current)
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0);
 
-      fetch('/', {
-        method: 'POST',
-        headers: {
-          'X-CSRFToken': csrfToken,
-          'X-Requested-With': 'XMLHttpRequest'
-        },
-        body: formData
-      })
+      // 4. Calculate client-side motion variance in central face crop
+      const cropW = Math.floor(video.videoWidth * 0.35);
+      const cropH = Math.floor(video.videoHeight * 0.45);
+      const sx = Math.floor((video.videoWidth - cropW) / 2);
+      const sy = Math.floor((video.videoHeight - cropH) / 2);
+
+      const d1 = ctxPrev.getImageData(sx, sy, cropW, cropH).data;
+      const d2 = ctx.getImageData(sx, sy, cropW, cropH).data;
+
+      let diffSum = 0;
+      const step = 4 * 4; // Sample every 4th pixel for speed
+      let samples = 0;
+      for (let i = 0; i < d1.length; i += step) {
+        const g1 = (d1[i] + d1[i+1] + d1[i+2]) / 3;
+        const g2 = (d2[i] + d2[i+1] + d2[i+2]) / 3;
+        diffSum += Math.abs(g1 - g2);
+        samples++;
+      }
+      const motionScore = samples > 0 ? (diffSum / samples) : 2.0;
+
+      // Rigid static photo or screen held still has no physiological movement (< 0.65)
+      if (motionScore < 0.65) {
+        scanline.classList.add('d-none');
+        reticle.style.borderColor = 'white';
+        playAudioFeedback('spoof');
+        showSpoofWarning("Static photo detected. Please present a real live person with natural movement.");
+        return;
+      }
+
+      canvas.toBlob(blobCurr => {
+        if (!blobCurr) {
+          isScanning = false;
+          scanline.classList.add('d-none');
+          return;
+        }
+
+        canvasPrev.toBlob(blobPrev => {
+          const formData = new FormData();
+          formData.append('image', blobCurr, 'scan.jpg');
+          if (blobPrev) formData.append('prev_image', blobPrev, 'prev.jpg');
+          formData.append('format', 'json');
+
+          fetch('/', {
+            method: 'POST',
+            headers: {
+              'X-CSRFToken': csrfToken,
+              'X-Requested-With': 'XMLHttpRequest'
+            },
+            body: formData
+          })
       .then(res => res.json())
       .then(data => {
         scanline.classList.add('d-none');

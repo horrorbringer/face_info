@@ -12,6 +12,7 @@ def kiosk(request):
     context = {"result": None}
     if request.method == "POST":
         image = request.FILES.get("image")
+        prev_image = request.FILES.get("prev_image")
         is_ajax = (
             request.headers.get("X-Requested-With") == "XMLHttpRequest"
             or "application/json" in request.headers.get("Accept", "")
@@ -26,7 +27,7 @@ def kiosk(request):
             return render(request, "recognition/kiosk.html", context)
 
         try:
-            vector, model_name, liveness = process_kiosk_frame(image)
+            vector, model_name, liveness = process_kiosk_frame(image, prev_upload=prev_image)
             student, score = best_match(vector)
         except FaceRecognitionUnavailable as exc:
             err_msg = str(exc)

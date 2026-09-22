@@ -66,22 +66,16 @@ def embedding_from_upload(upload):
     return vector, "approved-onnx-model"
 
 
-def check_liveness(image, face):
+def check_liveness(image, face, prev_image=None):
     """
-    Passive liveness / anti-spoofing detection:
-    Determines whether the presented face is a real live human or a spoof
-    (e.g., printed paper photo, smartphone/tablet screen display).
+    Multi-Factor Biometric Liveness Verification (Anti-Spoofing):
+    1. 3D Curvature: Analyzes face depth span vs width ratio (prevents planar 2D photos/screens).
+    2. Temporal Micro-Motion: Compares consecutive frames for physiological motion (prevents static photos).
+    3. 2D FFT Moiré: Detects digital display sub-pixel grids (prevents smartphone/tablet replays).
+    4. Texture & Sharpness: Analyzes Laplacian variance (detects paper prints / recaptures).
+    5. Chrominance Distribution: Verifies natural skin tones in YCrCb color space.
 
-    Evaluates:
-    1. 3D Facial Depth Variance: Evaluates the (x, y, z) coordinates from
-       landmark_3d_68. Real human heads exhibit significant relative depth between
-       the nose tip, eyes, and jawline, while flat screens/paper show compressed depth.
-    2. Moiré / Screen Grid Frequency Analysis: Applies 2D FFT to identify
-       high-frequency periodic harmonic spikes created by digital LCD/OLED display matrices.
-    3. Texture & Sharpness: Analyzes Laplacian variance for paper/screen recapture blur.
-    4. Chrominance Distribution: Verifies natural skin tones in YCrCb color space.
-
-    Returns: (is_real: bool, score: float, reason: str)
+    Returns: (is_real: bool, score: float, reason: str, metrics: dict)
     """
     import cv2
     score = 1.0
@@ -99,9 +93,9 @@ def check_liveness(image, face):
         depth_span = float(np.ptp(pts[:, 2]))
         depth_ratio = depth_span / face_width
 
-        # Planar 2D photos held up to camera lack natural 3D depth curvature
-        if depth_ratio < 0.055:
-            score -= 0.40
+        # Planar 2D photos/screens lack natural 3D depth curvature
+        if depth_ratio < 0.070:
+            score -= 0.55
             reasons.append("Planar 2D surface detected (flat photo/screen)")
 
         # Compute Eye Aspect Ratio (EAR) for blink detection
@@ -137,13 +131,25 @@ def check_liveness(image, face):
     x2, y2 = min(image.shape[1], x2), min(image.shape[0], y2)
     crop = image[y1:y2, x1:x2]
 
+    temporal_diff = None
+    if prev_image is not None and crop.shape[0] > 20 and crop.shape[1] > 20:
+        prev_crop = prev_image[y1:y2, x1:x2]
+        if prev_crop.shape == crop.shape:
+            gray_curr = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+            gray_prev = cv2.cvtColor(prev_crop, cv2.COLOR_BGR2GRAY)
+            temporal_diff = float(np.mean(np.abs(gray_curr.astype(np.float32) - gray_prev.astype(np.float32))))
+            # A live human face always has natural micro-motion (>1.2); a static photo is frozen (<1.0)
+            if temporal_diff < 1.0:
+                score -= 0.60
+                reasons.append("Static frozen photo detected (zero physiological micro-movement)")
+
     if crop.shape[0] > 40 and crop.shape[1] > 40:
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
 
         # 2a. Blur / low texture variance (typical of paper printouts or out-of-focus recaptures)
         lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
         if lap_var < 20.0:
-            score -= 0.35
+            score -= 0.55
             reasons.append("Unnatural low texture variance (printed photo or blur)")
 
         # 2b. Screen Moiré / Digital Sub-Pixel Grid (2D Fast Fourier Transform)
@@ -156,8 +162,8 @@ def check_liveness(image, face):
         low_band = mag[cy - 12:cy + 12, cx - 12:cx + 12].sum()
         total_power = mag.sum()
         high_freq_ratio = (total_power - low_band) / max(1.0, total_power)
-        if high_freq_ratio > 0.89:
-            score -= 0.35
+        if high_freq_ratio > 0.82:
+            score -= 0.55
             reasons.append("Screen grid/moiré pattern detected (display screen)")
 
         # 2c. Skin color gamut check in YCrCb
@@ -167,7 +173,7 @@ def check_liveness(image, face):
         skin_mask = (cr >= 128) & (cr <= 182) & (cb >= 68) & (cb <= 138)
         skin_ratio = float(skin_mask.sum()) / float(crop.shape[0] * crop.shape[1])
         if skin_ratio < 0.12:
-            score -= 0.30
+            score -= 0.40
             reasons.append("Artificial color spectrum (display backlight)")
 
     score = max(0.0, min(1.0, score))
@@ -178,11 +184,12 @@ def check_liveness(image, face):
         "ear": ear,
         "yaw_ratio": yaw_ratio,
         "is_blinking": ear < 0.20,
+        "temporal_diff": round(temporal_diff, 3) if temporal_diff is not None else None,
     }
     return is_real, round(score, 3), details, metrics
 
 
-def process_kiosk_frame(upload):
+def process_kiosk_frame(upload, prev_upload=None):
     """
     Process a live kiosk frame: decodes image, detects face, and verifies liveness.
     Returns: (vector, model_name, liveness_dict)
@@ -206,6 +213,19 @@ def process_kiosk_frame(upload):
     if image is None:
         raise FaceRecognitionUnavailable("The camera frame could not be decoded.")
 
+    prev_image = None
+    if prev_upload:
+        try:
+            if hasattr(prev_upload, "seek"):
+                prev_upload.seek(0)
+            prev_raw = prev_upload.read()
+            if hasattr(prev_upload, "seek"):
+                prev_upload.seek(0)
+            if prev_raw:
+                prev_image = cv2.imdecode(np.frombuffer(prev_raw, np.uint8), cv2.IMREAD_COLOR)
+        except Exception:
+            prev_image = None
+
     faces = _app().get(image)
     if not faces:
         raise FaceRecognitionUnavailable("No face detected. Please face the camera with adequate lighting.")
@@ -219,8 +239,8 @@ def process_kiosk_frame(upload):
 
     primary_face = faces[0]
 
-    # Verify real vs fake (anti-spoofing)
-    is_real, liveness_score, reason, metrics = check_liveness(image, primary_face)
+    # Verify real vs fake (anti-spoofing) with optional temporal frame
+    is_real, liveness_score, reason, metrics = check_liveness(image, primary_face, prev_image=prev_image)
     liveness_info = {
         "is_real": is_real,
         "score": liveness_score,
