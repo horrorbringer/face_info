@@ -40,7 +40,7 @@
     </div>
     <div class="d-flex flex-column gap-2">
       {% for student in students %}
-        <a href="{% url 'students:enroll' student.student_id %}" class="fi-student-card" style="animation: fi-slide-in {{ forloop.counter|add:"2" }}00ms ease-out;">
+        <a href="{% url 'students:enroll' student.student_id %}" class="fi-student-card" style="animation: fi-slide-in 0.3s ease-out;">
           <div class="fi-student-avatar">
             {{ student.full_name|truncatechars:1|upper }}
           </div>
