@@ -409,8 +409,16 @@ server {
         proxy_connect_timeout 60s;
         proxy_read_timeout 60s;
     }
-}
 ```
+
+> [!WARNING]
+> **Crucial Ubuntu Permission Step**:
+> On Ubuntu, the `/home/ubuntu` directory has permissions `750` or `700`, which blocks Nginx (`www-data` user) from accessing `/home/ubuntu/face_info/staticfiles/` and causes **`HTTP 403 Forbidden`** on all CSS/JS files.
+> You **must** grant execute permissions so Nginx can traverse the path:
+> ```bash
+> chmod 755 /home/ubuntu
+> chmod -R 755 /home/ubuntu/face_info/staticfiles
+> ```
 
 ### 8.3 Enable Site & Obtain SSL Certificate
 ```bash
@@ -509,4 +517,5 @@ crontab -e
 | **502 Bad Gateway** | Gunicorn service or web container down | Native: `sudo systemctl status faceinfo-web.service` / Docker: `docker compose logs web`. |
 | **pgvector extension error** | Extension not enabled in PostgreSQL | Run `sudo -u postgres psql -d faceinfo -c "CREATE EXTENSION IF NOT EXISTS vector;"`. |
 | **OpenCV ImportError: libGL.so.1** | Missing native graphics libraries | Run `sudo apt install -y libgl1 libglib2.0-0`. |
+| **CSS / Static files not loading (HTTP 403)** | Nginx (`www-data`) lacks traverse permissions on `/home/ubuntu` | Run `chmod 755 /home/ubuntu` and `chmod -R 755 /home/ubuntu/face_info/staticfiles`. |
 | **Celery alerts not sending** | Telegram token missing or invalid Chat ID | Check `TELEGRAM_BOT_TOKEN` in `.env` and review Celery logs. |
