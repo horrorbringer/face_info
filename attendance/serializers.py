@@ -102,3 +102,57 @@ class AttendanceOverrideSerializer(serializers.ModelSerializer):
     class Meta:
         model = AttendanceRecord
         fields = ["status", "is_deleted"]
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    old_password = serializers.CharField(write_only=True)
+    new_password = serializers.CharField(write_only=True, min_length=8)
+    confirm_password = serializers.CharField(write_only=True)
+
+    def validate(self, data):
+        if data["new_password"] != data["confirm_password"]:
+            raise serializers.ValidationError({"confirm_password": "New passwords do not match."})
+        user = self.context.get("request").user
+        if not user.check_password(data["old_password"]):
+            raise serializers.ValidationError({"old_password": "Old password is incorrect."})
+        return data
+
+
+class SessionCreateSerializer(serializers.ModelSerializer):
+    auto_generate_qr = serializers.BooleanField(default=True, write_only=True, required=False)
+    qr_expiry_minutes = serializers.IntegerField(default=120, write_only=True, required=False)
+
+    class Meta:
+        model = Session
+        fields = [
+            "id", "class_room", "date", "start_time", "end_time",
+            "auto_generate_qr", "qr_expiry_minutes"
+        ]
+
+    def create(self, validated_data):
+        import datetime
+        import secrets
+        from django.utils import timezone
+
+        auto_qr = validated_data.pop("auto_generate_qr", True)
+        expiry_minutes = validated_data.pop("qr_expiry_minutes", 120)
+
+        if auto_qr:
+            validated_data["qr_token"] = secrets.token_urlsafe(32)
+            validated_data["qr_token_expires_at"] = timezone.now() + datetime.timedelta(minutes=expiry_minutes)
+
+        return super().create(validated_data)
+
+
+class SessionRosterItemSerializer(serializers.Serializer):
+    student_pk = serializers.IntegerField(source="id")
+    student_id = serializers.CharField()
+    student_name = serializers.CharField(source="full_name")
+    is_active = serializers.BooleanField()
+    guardian_contact = serializers.CharField()
+    attendance_status = serializers.CharField()
+    method = serializers.CharField(allow_null=True)
+    checked_in_at = serializers.DateTimeField(allow_null=True)
+    confidence_score = serializers.FloatField(allow_null=True)
+    record_id = serializers.IntegerField(allow_null=True)
+    is_deleted = serializers.BooleanField(default=False)
