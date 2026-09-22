@@ -31,11 +31,12 @@ Welcome to the central documentation index for the Smart Attendance System. This
 - Sequence flows for QR check-in, Face matching, and asynchronous alert dispatching.
 - Configuration variables and production deployment tips.
 
-### 3. [API Reference](api_reference.md) & [Mobile Integration Guide](mobile_api_guide.md)
-> **Summary:** Complete REST API endpoint reference and step-by-step Flutter integration handbook.
+### 3. [API Reference](api_reference.md), [Mobile Integration Guide](mobile_api_guide.md) & [API Status & MVP Scope](api_status_and_mvp.md)
+> **Summary:** Complete REST API endpoint reference, Flutter integration handbook, and verified MVP feature completion scorecard.
 - Mobile authentication lifecycle, token revocation on logout, and role routing.
 - QR scanner integration, live face check-in, and history pagination.
 - Teacher live class roster, roll call, and session scheduling flows.
+- Bulk attendance manual overrides and student today schedule endpoints.
 - Interactive Swagger UI (`/api/docs/`) and OpenAPI 3.0 schema (`/api/schema/`).
 - HTTP error handling matrix and Dart code generator setup.
 

@@ -369,3 +369,47 @@ class SmartAttendanceTests(TestCase):
 
         docs_resp = self.client.get("/api/docs/")
         self.assertEqual(docs_resp.status_code, 200)
+
+    def test_student_today_schedule(self):
+        self.client.force_authenticate(user=self.student_user)
+        resp = self.client.get("/api/students/schedule/today/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(resp.data), 1)
+        self.assertEqual(resp.data[0]["id"], self.session.id)
+        self.assertIn("is_qr_active", resp.data[0])
+        self.assertIn("is_checked_in", resp.data[0])
+
+    def test_student_alerts_mine(self):
+        AlertLog.objects.create(
+            student=self.student,
+            session=self.session,
+            channel="telegram",
+            status="sent",
+        )
+        self.client.force_authenticate(user=self.student_user)
+        resp = self.client.get("/api/alerts/mine/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(resp.data), 1)
+        self.assertEqual(resp.data[0]["channel"], "telegram")
+        self.assertEqual(resp.data[0]["status"], "sent")
+
+    def test_teacher_session_bulk_attendance(self):
+        self.client.force_authenticate(user=self.teacher_user)
+        resp = self.client.post(
+            f"/api/teacher/sessions/{self.session.id}/attendance/bulk/",
+            {
+                "records": [
+                    {"student_id": self.student.student_id, "status": "present"},
+                    {"student_id": self.student2.student_id, "status": "absent"},
+                ]
+            },
+            format="json"
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data["updated_count"], 2)
+
+        # Verify in DB
+        r1 = AttendanceRecord.objects.get(student=self.student, session=self.session)
+        r2 = AttendanceRecord.objects.get(student=self.student2, session=self.session)
+        self.assertEqual(r1.status, "present")
+        self.assertEqual(r2.status, "absent")

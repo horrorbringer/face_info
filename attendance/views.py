@@ -13,15 +13,17 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from students.models import Student
-from .models import AttendanceRecord, ClassRoom, Session, StudentFace, Teacher
+from .models import AlertLog, AttendanceRecord, ClassRoom, Session, StudentFace, Teacher
 from .security import (
     get_dynamic_qr_info,
     is_client_ip_allowed,
     verify_dynamic_qr_token,
 )
 from .serializers import (
+    AlertLogSerializer,
     AttendanceOverrideSerializer,
     AttendanceRecordSerializer,
+    BulkAttendanceOverrideSerializer,
     ChangePasswordSerializer,
     ClassRoomSerializer,
     LoginSerializer,
@@ -30,6 +32,7 @@ from .serializers import (
     SessionRosterItemSerializer,
     SessionSerializer,
     StudentProfileSerializer,
+    StudentSessionScheduleSerializer,
 )
 from .tasks import send_absence_alerts_for_session
 
@@ -125,6 +128,65 @@ class StudentMeView(APIView):
             return Response({"error": "No student profile associated with this account."}, status=status.HTTP_404_NOT_FOUND)
         student = request.user.student_profile
         serializer = StudentProfileSerializer(student)
+        return Response(serializer.data)
+
+
+class StudentTodayScheduleView(APIView):
+    """
+    GET /api/students/schedule/today/
+    Returns today's classroom sessions for the authenticated student,
+    including check-in status and active QR indicator for Home Dashboard.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        if not hasattr(request.user, "student_profile"):
+            return Response({"error": "No student profile found."}, status=status.HTTP_404_NOT_FOUND)
+        student = request.user.student_profile
+        if not student.class_room:
+            return Response([])
+
+        today = timezone.localdate()
+        sessions = Session.objects.filter(class_room=student.class_room, date=today).order_by("start_time")
+
+        records = AttendanceRecord.objects.filter(student=student, session__in=sessions, is_deleted=False)
+        record_map = {r.session_id: r for r in records}
+
+        now = timezone.now()
+        schedule_data = []
+        for s in sessions:
+            rec = record_map.get(s.id)
+            is_qr_active = bool(s.qr_token and s.qr_token_expires_at and now < s.qr_token_expires_at and not s.ended_at)
+            schedule_data.append({
+                "id": s.id,
+                "class_room": s.class_room,
+                "date": s.date,
+                "start_time": s.start_time,
+                "end_time": s.end_time,
+                "is_qr_active": is_qr_active,
+                "is_checked_in": rec is not None,
+                "my_status": rec.status if rec else None,
+                "my_method": rec.method if rec else None,
+                "checked_in_at": rec.checked_in_at if rec else None,
+            })
+
+        serializer = StudentSessionScheduleSerializer(schedule_data, many=True)
+        return Response(serializer.data)
+
+
+class StudentAlertsMineView(APIView):
+    """
+    GET /api/alerts/mine/
+    Returns in-app absence alerts / notification history for the authenticated student.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        if not hasattr(request.user, "student_profile"):
+            return Response({"error": "No student profile found."}, status=status.HTTP_404_NOT_FOUND)
+        student = request.user.student_profile
+        alerts = AlertLog.objects.filter(student=student).select_related("session", "session__class_room").order_by("-sent_at")[:50]
+        serializer = AlertLogSerializer(alerts, many=True)
         return Response(serializer.data)
 
 
@@ -512,6 +574,69 @@ class TeacherSessionRosterView(APIView):
             "summary": summary,
             "roster": serializer.data,
         })
+
+
+class TeacherSessionBulkAttendanceView(APIView):
+    """
+    POST /api/teacher/sessions/{session_id}/attendance/bulk/
+    Applies bulk manual attendance status updates for multiple students in a session.
+    Payload:
+    {
+      "records": [
+        {"student_id": "STU001", "status": "present"},
+        {"student_id": "STU002", "status": "absent"}
+      ]
+    }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, session_id):
+        session = get_object_or_404(Session.objects.select_related("class_room", "class_room__teacher"), id=session_id)
+        if hasattr(request.user, "teacher_profile") and not request.user.is_staff:
+            if session.class_room.teacher != request.user.teacher_profile:
+                return Response({"error": "Not authorized to modify attendance for this session."}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = BulkAttendanceOverrideSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        items = serializer.validated_data["records"]
+        updated_count = 0
+        errors = []
+
+        for item in items:
+            student_id = item.get("student_id")
+            student_pk = item.get("student_pk")
+            new_status = item["status"]
+
+            try:
+                if student_id:
+                    student = Student.objects.get(student_id=student_id, class_room=session.class_room)
+                elif student_pk:
+                    student = Student.objects.get(id=student_pk, class_room=session.class_room)
+                else:
+                    errors.append("Provide either student_id or student_pk.")
+                    continue
+            except Student.DoesNotExist:
+                errors.append(f"Student {student_id or student_pk} not found in this classroom.")
+                continue
+
+            AttendanceRecord.objects.update_or_create(
+                student=student,
+                session=session,
+                defaults={
+                    "status": new_status,
+                    "method": "manual",
+                    "is_deleted": False,
+                    "edited_by": request.user,
+                }
+            )
+            updated_count += 1
+
+        return Response({
+            "message": f"Successfully updated {updated_count} attendance records.",
+            "updated_count": updated_count,
+            "errors": errors,
+        }, status=status.HTTP_200_OK)
 
 
 # ----------------------------------------------------------------------

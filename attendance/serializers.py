@@ -2,7 +2,7 @@ from rest_framework import serializers
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
 from students.models import Student
-from .models import AttendanceRecord, ClassRoom, Session, StudentFace, Teacher
+from .models import AlertLog, AttendanceRecord, ClassRoom, Session, StudentFace, Teacher
 
 
 class LoginSerializer(serializers.Serializer):
@@ -156,3 +156,35 @@ class SessionRosterItemSerializer(serializers.Serializer):
     confidence_score = serializers.FloatField(allow_null=True)
     record_id = serializers.IntegerField(allow_null=True)
     is_deleted = serializers.BooleanField(default=False)
+
+
+class BulkAttendanceItemSerializer(serializers.Serializer):
+    student_id = serializers.CharField(required=False)
+    student_pk = serializers.IntegerField(required=False)
+    status = serializers.ChoiceField(choices=AttendanceRecord.STATUS_CHOICES)
+
+
+class BulkAttendanceOverrideSerializer(serializers.Serializer):
+    records = BulkAttendanceItemSerializer(many=True)
+
+
+class AlertLogSerializer(serializers.ModelSerializer):
+    session_name = serializers.CharField(source="session.class_room.name", read_only=True)
+    session_date = serializers.DateField(source="session.date", read_only=True)
+
+    class Meta:
+        model = AlertLog
+        fields = ["id", "session", "session_name", "session_date", "channel", "status", "sent_at", "error_message"]
+
+
+class StudentSessionScheduleSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    class_room = serializers.CharField(source="class_room.name")
+    date = serializers.DateField()
+    start_time = serializers.TimeField()
+    end_time = serializers.TimeField()
+    is_qr_active = serializers.BooleanField()
+    is_checked_in = serializers.BooleanField()
+    my_status = serializers.CharField(allow_null=True)
+    my_method = serializers.CharField(allow_null=True)
+    checked_in_at = serializers.DateTimeField(allow_null=True)

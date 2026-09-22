@@ -13,6 +13,8 @@ urlpatterns = [
     path("auth/logout/", views.LogoutView.as_view(), name="auth-logout"),
     path("auth/change-password/", views.ChangePasswordView.as_view(), name="auth-change-password"),
     path("students/me/", views.StudentMeView.as_view(), name="students-me"),
+    path("students/schedule/today/", views.StudentTodayScheduleView.as_view(), name="students-schedule-today"),
+    path("alerts/mine/", views.StudentAlertsMineView.as_view(), name="alerts-mine"),
 
     # Attendance & QR
     path("attendance/checkin/qr/", views.QRCheckInView.as_view(), name="attendance-checkin-qr"),
@@ -26,6 +28,7 @@ urlpatterns = [
     path("teacher/classes/today/", views.TeacherTodayClassesView.as_view(), name="teacher-classes-today"),
     path("teacher/sessions/", views.TeacherSessionCreateView.as_view(), name="teacher-session-create"),
     path("teacher/sessions/<int:session_id>/roster/", views.TeacherSessionRosterView.as_view(), name="teacher-session-roster"),
+    path("teacher/sessions/<int:session_id>/attendance/bulk/", views.TeacherSessionBulkAttendanceView.as_view(), name="teacher-session-attendance-bulk"),
     path("teacher/sessions/<int:session_id>/qr/", views.SessionRotateQRView.as_view(), name="teacher-session-qr"),
     path("teacher/sessions/<int:session_id>/qr/dynamic/", views.SessionDynamicQRView.as_view(), name="teacher-session-qr-dynamic"),
     path("teacher/sessions/<int:session_id>/live-qr/", views.session_live_qr, name="teacher-session-live-qr"),
