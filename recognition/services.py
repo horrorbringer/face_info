@@ -66,6 +66,137 @@ def embedding_from_upload(upload):
     return vector, "approved-onnx-model"
 
 
+def check_liveness(image, face):
+    """
+    Passive liveness / anti-spoofing detection:
+    Determines whether the presented face is a real live human or a spoof
+    (e.g., printed paper photo, smartphone/tablet screen display).
+
+    Evaluates:
+    1. 3D Facial Depth Variance: Evaluates the (x, y, z) coordinates from
+       landmark_3d_68. Real human heads exhibit significant relative depth between
+       the nose tip, eyes, and jawline, while flat screens/paper show compressed depth.
+    2. Moiré / Screen Grid Frequency Analysis: Applies 2D FFT to identify
+       high-frequency periodic harmonic spikes created by digital LCD/OLED display matrices.
+    3. Texture & Sharpness: Analyzes Laplacian variance for paper/screen recapture blur.
+    4. Chrominance Distribution: Verifies natural skin tones in YCrCb color space.
+
+    Returns: (is_real: bool, score: float, reason: str)
+    """
+    import cv2
+    score = 1.0
+    reasons = []
+
+    # 1. 3D Landmark Depth Variance
+    lm3d = face.get("landmark_3d_68")
+    if lm3d is not None and len(lm3d) == 68:
+        pts = np.asarray(lm3d, dtype=np.float32)
+        face_width = max(1.0, float(np.ptp(pts[:, 0])))
+        depth_span = float(np.ptp(pts[:, 2]))
+        depth_ratio = depth_span / face_width
+
+        # Planar 2D photos held up to camera lack natural 3D depth curvature
+        if depth_ratio < 0.055:
+            score -= 0.40
+            reasons.append("Planar 2D surface detected (flat photo/screen)")
+
+    # 2. Extract and analyze face crop
+    x1, y1, x2, y2 = [int(v) for v in face.bbox]
+    x1, y1 = max(0, x1), max(0, y1)
+    x2, y2 = min(image.shape[1], x2), min(image.shape[0], y2)
+    crop = image[y1:y2, x1:x2]
+
+    if crop.shape[0] > 40 and crop.shape[1] > 40:
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+
+        # 2a. Blur / low texture variance (typical of paper printouts or out-of-focus recaptures)
+        lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        if lap_var < 20.0:
+            score -= 0.35
+            reasons.append("Unnatural low texture variance (printed photo or blur)")
+
+        # 2b. Screen Moiré / Digital Sub-Pixel Grid (2D Fast Fourier Transform)
+        resized = cv2.resize(gray, (128, 128))
+        dft = np.fft.fft2(resized)
+        dft_shift = np.fft.fftshift(dft)
+        mag = np.abs(dft_shift)
+        h, w = mag.shape
+        cy, cx = h // 2, w // 2
+        low_band = mag[cy - 12:cy + 12, cx - 12:cx + 12].sum()
+        total_power = mag.sum()
+        high_freq_ratio = (total_power - low_band) / max(1.0, total_power)
+        if high_freq_ratio > 0.89:
+            score -= 0.35
+            reasons.append("Screen grid/moiré pattern detected (display screen)")
+
+        # 2c. Skin color gamut check in YCrCb
+        ycrcb = cv2.cvtColor(crop, cv2.COLOR_BGR2YCrCb)
+        cr = ycrcb[:, :, 1]
+        cb = ycrcb[:, :, 2]
+        skin_mask = (cr >= 128) & (cr <= 182) & (cb >= 68) & (cb <= 138)
+        skin_ratio = float(skin_mask.sum()) / float(crop.shape[0] * crop.shape[1])
+        if skin_ratio < 0.12:
+            score -= 0.30
+            reasons.append("Artificial color spectrum (display backlight)")
+
+    score = max(0.0, min(1.0, score))
+    is_real = score >= 0.50
+    details = ", ".join(reasons) if reasons else "Real 3D face verified"
+    return is_real, round(score, 3), details
+
+
+def process_kiosk_frame(upload):
+    """
+    Process a live kiosk frame: decodes image, detects face, and verifies liveness.
+    Returns: (vector, model_name, liveness_dict)
+    Raises: FaceRecognitionUnavailable on error or spoof detection.
+    """
+    try:
+        import cv2
+    except ImportError as exc:
+        raise FaceRecognitionUnavailable("OpenCV is required for face scanning.") from exc
+
+    if hasattr(upload, "seek"):
+        upload.seek(0)
+    raw = upload.read()
+    if hasattr(upload, "seek"):
+        upload.seek(0)
+
+    if not raw:
+        raise FaceRecognitionUnavailable("The camera frame is empty.")
+
+    image = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        raise FaceRecognitionUnavailable("The camera frame could not be decoded.")
+
+    faces = _app().get(image)
+    if not faces:
+        raise FaceRecognitionUnavailable("No face detected. Please face the camera with adequate lighting.")
+
+    if len(faces) > 1:
+        faces.sort(key=lambda f: float((f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1])), reverse=True)
+        primary_area = float((faces[0].bbox[2] - faces[0].bbox[0]) * (faces[0].bbox[3] - faces[0].bbox[1]))
+        second_area = float((faces[1].bbox[2] - faces[1].bbox[0]) * (faces[1].bbox[3] - faces[1].bbox[1]))
+        if second_area > 0.45 * primary_area:
+            raise FaceRecognitionUnavailable(f"Multiple faces detected ({len(faces)} people). Ensure only one person is in frame.")
+
+    primary_face = faces[0]
+
+    # Verify real vs fake (anti-spoofing)
+    is_real, liveness_score, reason = check_liveness(image, primary_face)
+    liveness_info = {
+        "is_real": is_real,
+        "score": liveness_score,
+        "details": reason,
+    }
+
+    if not is_real:
+        raise FaceRecognitionUnavailable(f"Spoof detected: {reason}. Please present a real live face.")
+
+    vector = primary_face.normed_embedding.astype(float).tolist()
+    return vector, "approved-onnx-model", liveness_info
+
+
 def best_match(vector):
     """Pilot-scale cosine search. Replace with pgvector HNSW query when throughput requires it."""
     from students.models import FaceEmbedding

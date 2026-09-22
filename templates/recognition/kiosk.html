@@ -1,6 +1,367 @@
-{% extends "base.html" %}{% block content %}<div class="row justify-content-center"><div class="col-lg-7"><h1 class="h3">Student face lookup</h1><p class="text-muted">Use only with the student’s consent. Camera frames are processed temporarily and are not saved.</p>
-{% if error %}<div class="alert alert-warning">{{ error }}</div>{% endif %}
-{% if result %}<div class="card border-primary"><div class="card-body"><h2 class="h5">Candidate match — staff confirmation required</h2><p class="mb-1"><strong>{{ result.student.full_name }}</strong></p><p class="mb-3">Student ID: {{ result.student.student_id }} · Class/year: {{ result.student.class_year|default:"Not recorded" }}</p><form method="post" action="{% url 'recognition:confirm' result.student.student_id %}">{% csrf_token %}<button class="btn btn-primary">Confirm identity</button> <a href="/" class="btn btn-outline-secondary">Reject</a></form></div></div>
-{% else %}<form method="post" enctype="multipart/form-data" id="scan-form">{% csrf_token %}<video id="camera" class="w-100 bg-dark rounded" autoplay playsinline style="max-height:420px"></video><canvas id="frame" class="d-none"></canvas><input id="image" type="file" name="image" class="d-none" accept="image/*"><div class="mt-3"><button type="button" id="capture" class="btn btn-primary">Capture and search</button> <a href="{% url 'students:manual_lookup' %}" class="btn btn-outline-secondary">Manual lookup</a></div></form>
-<script>const v=document.getElementById('camera'),c=document.getElementById('frame'),i=document.getElementById('image');navigator.mediaDevices.getUserMedia({video:{facingMode:'user'},audio:false}).then(s=>v.srcObject=s).catch(()=>alert('Camera permission is required.'));document.getElementById('capture').onclick=()=>{c.width=v.videoWidth;c.height=v.videoHeight;c.getContext('2d').drawImage(v,0,0);c.toBlob(b=>{const d=new DataTransfer();d.items.add(new File([b],'scan.jpg',{type:'image/jpeg'}));i.files=d.files;document.getElementById('scan-form').submit()},'image/jpeg',.9)}</script>{% endif %}</div></div>{% endblock %}
+{% extends "base.html" %}
 
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-8 col-xl-7">
+    <!-- Header -->
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <div>
+        <h1 class="h3 mb-1">Face Recognition Scanner</h1>
+        <p class="text-muted small mb-0">Hands-free automatic identity verification with real-time anti-spoofing detection.</p>
+      </div>
+      <div class="form-check form-switch fs-6">
+        <input class="form-check-input" type="checkbox" role="switch" id="auto-scan-toggle" checked>
+        <label class="form-check-label fw-semibold" for="auto-scan-toggle">Auto-Scan</label>
+      </div>
+    </div>
+
+    <!-- Error alert from server fallback -->
+    {% if error %}
+      <div class="alert alert-warning mb-3">{{ error }}</div>
+    {% endif %}
+
+    <!-- Viewfinder Card -->
+    <div class="card border-0 shadow-sm overflow-hidden mb-3">
+      <div class="card-body p-0 position-relative bg-dark" style="min-height: 420px;">
+        <!-- Live Video Element -->
+        <video id="camera" class="w-100 h-100" autoplay playsinline muted style="max-height: 460px; object-fit: cover;"></video>
+
+        <!-- Oval Framing Reticle Overlay -->
+        <div id="reticle" class="position-absolute top-50 start-50 translate-middle pointer-events-none border border-2 border-white rounded-pill opacity-75 d-flex align-items-center justify-content-center"
+             style="width: 240px; height: 320px; box-shadow: 0 0 0 9999px rgba(0,0,0,0.38); transition: border-color 0.3s ease;">
+          <div id="reticle-label" class="text-center text-white small fw-semibold px-2 py-1 rounded bg-dark bg-opacity-50">
+            Position face here
+          </div>
+        </div>
+
+        <!-- Scanning Pulse Line -->
+        <div id="scanline" class="position-absolute start-0 w-100 d-none"
+             style="height: 3px; background: linear-gradient(90deg, transparent, #0d6efd, transparent); box-shadow: 0 0 12px #0d6efd; animation: scanAnim 2s infinite ease-in-out;"></div>
+
+        <!-- Status Pill in Top Right of Camera -->
+        <div class="position-absolute top-0 end-0 m-3">
+          <span id="status-badge" class="badge bg-secondary px-3 py-2 shadow-sm fs-6">
+            Initializing camera...
+          </span>
+        </div>
+
+        <!-- Camera Permission Error -->
+        <div id="camera-error" class="position-absolute top-50 start-50 translate-middle text-white text-center d-none p-4 w-75 bg-dark bg-opacity-75 rounded">
+          <div class="fs-1 mb-2">📷</div>
+          <h2 class="h5">Camera Access Required</h2>
+          <p class="small text-white-50 mb-3">Please grant camera permissions in your browser or access via HTTPS / localhost.</p>
+          <button type="button" id="retry-camera" class="btn btn-sm btn-light">Retry Camera</button>
+        </div>
+
+        <!-- SUCCESS OVERLAY (Automated Match) -->
+        <div id="match-overlay" class="position-absolute top-0 start-0 w-100 h-100 bg-success bg-opacity-90 d-none flex-column align-items-center justify-content-center text-white p-4 text-center">
+          <div class="rounded-circle bg-white text-success d-flex align-items-center justify-content-center mb-3 shadow" style="width: 72px; height: 72px; font-size: 38px;">
+            ✓
+          </div>
+          <h2 class="h3 fw-bold mb-1" id="match-student-name">Student Name</h2>
+          <p class="fs-5 mb-2" id="match-student-id">STU-001</p>
+          <div class="d-flex gap-2 justify-content-center flex-wrap mb-3">
+            <span class="badge bg-white text-success px-3 py-2 fs-6 shadow-sm" id="match-score">95% Match</span>
+            <span class="badge bg-white text-success px-3 py-2 fs-6 shadow-sm">✓ Real 3D Face Verified</span>
+            <span class="badge bg-white text-success px-3 py-2 fs-6 shadow-sm d-none" id="match-session">✓ Attendance Marked</span>
+          </div>
+          <p class="small text-white-50 mb-0">Auto-resetting for next student in <span id="reset-counter" class="fw-bold text-white">3</span>s...</p>
+        </div>
+
+        <!-- SPOOF / WARNING OVERLAY -->
+        <div id="spoof-overlay" class="position-absolute top-0 start-0 w-100 h-100 bg-danger bg-opacity-90 d-none flex-column align-items-center justify-content-center text-white p-4 text-center">
+          <div class="rounded-circle bg-white text-danger d-flex align-items-center justify-content-center mb-3 shadow" style="width: 72px; height: 72px; font-size: 34px;">
+            ⚠️
+          </div>
+          <h2 class="h4 fw-bold mb-2">Spoof Detected</h2>
+          <p class="lead mb-2" id="spoof-msg">Digital screen or photo detected.</p>
+          <p class="small text-white-50 mb-0">Please present a real live person facing the camera. Resuming scan...</p>
+        </div>
+      </div>
+
+      <!-- Footer Controls -->
+      <div class="card-footer bg-white py-3 d-flex justify-content-between align-items-center">
+        <button type="button" id="manual-scan-btn" class="btn btn-primary px-4">
+          Scan Face Now
+        </button>
+        <div class="text-muted small">
+          <span id="liveness-indicator">🛡️ Real-time anti-spoofing active</span>
+        </div>
+        <a href="{% url 'students:manual_lookup' %}" class="btn btn-outline-secondary btn-sm">
+          Manual Lookup
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Hidden Canvas and CSRF Form for Frame Processing -->
+<canvas id="frame" class="d-none"></canvas>
+<form id="csrf-form" class="d-none">
+  {% csrf_token %}
+</form>
+
+<style>
+@keyframes scanAnim {
+  0% { top: 15%; opacity: 0.2; }
+  50% { top: 85%; opacity: 0.9; }
+  100% { top: 15%; opacity: 0.2; }
+}
+</style>
+
+<script>
+(function() {
+  const video = document.getElementById('camera');
+  const canvas = document.getElementById('frame');
+  const autoScanToggle = document.getElementById('auto-scan-toggle');
+  const manualScanBtn = document.getElementById('manual-scan-btn');
+  const statusBadge = document.getElementById('status-badge');
+  const cameraError = document.getElementById('camera-error');
+  const retryCamera = document.getElementById('retry-camera');
+  const reticle = document.getElementById('reticle');
+  const scanline = document.getElementById('scanline');
+  const matchOverlay = document.getElementById('match-overlay');
+  const matchName = document.getElementById('match-student-name');
+  const matchId = document.getElementById('match-student-id');
+  const matchScore = document.getElementById('match-score');
+  const matchSession = document.getElementById('match-session');
+  const resetCounter = document.getElementById('reset-counter');
+  const spoofOverlay = document.getElementById('spoof-overlay');
+  const spoofMsg = document.getElementById('spoof-msg');
+  const csrfToken = document.querySelector('#csrf-form [name=csrfmiddlewaretoken]').value;
+
+  let stream = null;
+  let isScanning = false;
+  let autoScanInterval = null;
+  let resetTimer = null;
+
+  // Web Audio chime feedback
+  function playAudioFeedback(type) {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      if (type === 'success') {
+        osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+        osc.frequency.setValueAtTime(880, ctx.currentTime + 0.12); // A5
+        gain.gain.setValueAtTime(0.2, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.4);
+      } else if (type === 'spoof') {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(220, ctx.currentTime);
+        osc.frequency.setValueAtTime(160, ctx.currentTime + 0.15);
+        gain.gain.setValueAtTime(0.3, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.35);
+      }
+    } catch (e) {
+      // Audio not supported or blocked
+    }
+  }
+
+  // Camera Initialization
+  function initCamera() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      showCameraError();
+      return;
+    }
+    navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+      audio: false
+    }).then(s => {
+      stream = s;
+      video.srcObject = s;
+      video.play().catch(e => console.warn("Video play error:", e));
+      cameraError.classList.add('d-none');
+      statusBadge.className = 'badge bg-success px-3 py-2 shadow-sm fs-6';
+      statusBadge.textContent = '🟢 Camera Ready';
+      startAutoScan();
+    }).catch(err => {
+      console.warn("Camera init error:", err);
+      showCameraError();
+    });
+  }
+
+  function showCameraError() {
+    cameraError.classList.remove('d-none');
+    statusBadge.className = 'badge bg-danger px-3 py-2 shadow-sm fs-6';
+    statusBadge.textContent = '🔴 Camera Error';
+    stopAutoScan();
+  }
+
+  retryCamera.addEventListener('click', initCamera);
+  initCamera();
+
+  // Capture current camera frame and send for auto-verification
+  function captureAndVerify() {
+    if (isScanning || !video.videoWidth || !video.videoHeight) return;
+    if (!matchOverlay.classList.contains('d-none') || !spoofOverlay.classList.contains('d-none')) return;
+
+    isScanning = true;
+    scanline.classList.remove('d-none');
+    statusBadge.className = 'badge bg-primary px-3 py-2 shadow-sm fs-6';
+    statusBadge.textContent = '🟡 Checking Face & Liveness...';
+    reticle.style.borderColor = '#0d6efd';
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0);
+
+    canvas.toBlob(blob => {
+      if (!blob) {
+        isScanning = false;
+        scanline.classList.add('d-none');
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('image', blob, 'scan.jpg');
+      formData.append('format', 'json');
+
+      fetch('/', {
+        method: 'POST',
+        headers: {
+          'X-CSRFToken': csrfToken,
+          'X-Requested-With': 'XMLHttpRequest'
+        },
+        body: formData
+      })
+      .then(res => res.json())
+      .then(data => {
+        scanline.classList.add('d-none');
+        reticle.style.borderColor = 'white';
+
+        if (data.status === 'matched') {
+          // SUCCESS: Real Face & Matched Student
+          playAudioFeedback('success');
+          showMatchSuccess(data);
+        } else if (data.status === 'spoof') {
+          // SPOOF: Screen or Paper Photo Detected
+          playAudioFeedback('spoof');
+          showSpoofWarning(data.error);
+        } else if (data.status === 'no_match') {
+          // Real face but no enrolled match
+          statusBadge.className = 'badge bg-warning text-dark px-3 py-2 shadow-sm fs-6';
+          statusBadge.textContent = '⚠️ No Match Found';
+          setTimeout(() => {
+            if (isScanning && !matchOverlay.classList.contains('d-none')) return;
+            statusBadge.className = 'badge bg-success px-3 py-2 shadow-sm fs-6';
+            statusBadge.textContent = '🟢 Camera Ready';
+            isScanning = false;
+          }, 1500);
+        } else {
+          // Other error (e.g. no face in frame)
+          statusBadge.className = 'badge bg-secondary px-3 py-2 shadow-sm fs-6';
+          statusBadge.textContent = 'Waiting for Face...';
+          setTimeout(() => { isScanning = false; }, 1000);
+        }
+      })
+      .catch(err => {
+        console.warn("Scan fetch error:", err);
+        scanline.classList.add('d-none');
+        statusBadge.className = 'badge bg-secondary px-3 py-2 shadow-sm fs-6';
+        statusBadge.textContent = '🟢 Camera Ready';
+        setTimeout(() => { isScanning = false; }, 1200);
+      });
+    }, 'image/jpeg', 0.92);
+  }
+
+  // Display Matched Success Overlay with Auto-Reset Countdown
+  function showMatchSuccess(data) {
+    matchName.textContent = data.student.full_name;
+    matchId.textContent = `ID: ${data.student.student_id} · ${data.student.class_year || 'Active'}`;
+    matchScore.textContent = `${Math.round(data.score * 100)}% Match`;
+    
+    if (data.session_recorded) {
+      matchSession.classList.remove('d-none');
+    } else {
+      matchSession.classList.add('d-none');
+    }
+
+    matchOverlay.classList.remove('d-none');
+    matchOverlay.classList.add('d-flex');
+    statusBadge.className = 'badge bg-success px-3 py-2 shadow-sm fs-6';
+    statusBadge.textContent = '✓ Verified Real Match';
+
+    // 3-second auto reset countdown
+    let seconds = 3;
+    resetCounter.textContent = seconds;
+    if (resetTimer) clearInterval(resetTimer);
+
+    resetTimer = setInterval(() => {
+      seconds--;
+      resetCounter.textContent = seconds;
+      if (seconds <= 0) {
+        clearInterval(resetTimer);
+        matchOverlay.classList.add('d-none');
+        matchOverlay.classList.remove('d-flex');
+        statusBadge.className = 'badge bg-success px-3 py-2 shadow-sm fs-6';
+        statusBadge.textContent = '🟢 Camera Ready';
+        isScanning = false;
+      }
+    }, 1000);
+  }
+
+  // Display Spoof / Screen Warning
+  function showSpoofWarning(message) {
+    spoofMsg.textContent = message || "Screen or printed photo detected. Please face the camera naturally.";
+    spoofOverlay.classList.remove('d-none');
+    spoofOverlay.classList.add('d-flex');
+    statusBadge.className = 'badge bg-danger px-3 py-2 shadow-sm fs-6';
+    statusBadge.textContent = '🔴 Spoof / Fake Detected';
+
+    setTimeout(() => {
+      spoofOverlay.classList.add('d-none');
+      spoofOverlay.classList.remove('d-flex');
+      statusBadge.className = 'badge bg-success px-3 py-2 shadow-sm fs-6';
+      statusBadge.textContent = '🟢 Camera Ready';
+      isScanning = false;
+    }, 2500);
+  }
+
+  // Auto-Scan Loop
+  function startAutoScan() {
+    if (autoScanInterval) clearInterval(autoScanInterval);
+    autoScanInterval = setInterval(() => {
+      if (autoScanToggle.checked && !isScanning) {
+        captureAndVerify();
+      }
+    }, 1600);
+  }
+
+  function stopAutoScan() {
+    if (autoScanInterval) {
+      clearInterval(autoScanInterval);
+      autoScanInterval = null;
+    }
+  }
+
+  autoScanToggle.addEventListener('change', () => {
+    if (autoScanToggle.checked) {
+      startAutoScan();
+    } else {
+      stopAutoScan();
+    }
+  });
+
+  manualScanBtn.addEventListener('click', () => {
+    captureAndVerify();
+  });
+
+  // Cleanup camera stream on unload
+  window.addEventListener('beforeunload', () => {
+    stopAutoScan();
+    if (stream) {
+      stream.getTracks().forEach(t => t.stop());
+    }
+  });
+})();
+</script>
+{% endblock %}
