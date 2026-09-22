@@ -1,5 +1,7 @@
 .env
 .venv/
+venv/
+logs/
 __pycache__/
 *.py[cod]
 db.sqlite3
