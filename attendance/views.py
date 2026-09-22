@@ -22,9 +22,12 @@ from .security import (
 from .serializers import (
     AttendanceOverrideSerializer,
     AttendanceRecordSerializer,
+    ChangePasswordSerializer,
     ClassRoomSerializer,
     LoginSerializer,
     QRCheckInSerializer,
+    SessionCreateSerializer,
+    SessionRosterItemSerializer,
     SessionSerializer,
     StudentProfileSerializer,
 )
@@ -77,6 +80,37 @@ class LoginView(APIView):
             "student": student_data,
             "teacher": teacher_data,
         })
+
+
+class LogoutView(APIView):
+    """
+    POST /api/auth/logout/
+    Revokes the current user's DRF token.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        Token.objects.filter(user=request.user).delete()
+        return Response({"message": "Successfully logged out. Token revoked."}, status=status.HTTP_200_OK)
+
+
+class ChangePasswordView(APIView):
+    """
+    POST /api/auth/change-password/
+    Allows authenticated users to change their password.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        serializer = ChangePasswordSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        request.user.set_password(serializer.validated_data["new_password"])
+        request.user.save()
+        token, _ = Token.objects.get_or_create(user=request.user)
+        return Response({
+            "message": "Password changed successfully.",
+            "token": token.key,
+        }, status=status.HTTP_200_OK)
 
 
 class StudentMeView(APIView):
@@ -198,6 +232,12 @@ class StudentAttendanceHistoryView(APIView):
     """
     GET /api/attendance/history/
     Returns non-deleted attendance records for the authenticated student.
+    Query parameters supported:
+      - status: 'present', 'late', 'absent'
+      - date_from: YYYY-MM-DD
+      - date_to: YYYY-MM-DD
+      - limit: int (max: 200)
+      - offset: int
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -205,7 +245,37 @@ class StudentAttendanceHistoryView(APIView):
         if not hasattr(request.user, "student_profile"):
             return Response({"error": "No student profile found."}, status=status.HTTP_404_NOT_FOUND)
         student = request.user.student_profile
-        records = AttendanceRecord.objects.filter(student=student, is_deleted=False).select_related("session", "session__class_room").order_by("-session__date", "-session__start_time")
+        records = (
+            AttendanceRecord.objects.filter(student=student, is_deleted=False)
+            .select_related("session", "session__class_room")
+            .order_by("-session__date", "-session__start_time")
+        )
+
+        status_param = request.query_params.get("status")
+        if status_param:
+            records = records.filter(status=status_param.lower())
+
+        date_from = request.query_params.get("date_from")
+        if date_from:
+            records = records.filter(session__date__gte=date_from)
+
+        date_to = request.query_params.get("date_to")
+        if date_to:
+            records = records.filter(session__date__lte=date_to)
+
+        limit_param = request.query_params.get("limit")
+        offset_param = request.query_params.get("offset")
+        if limit_param or offset_param:
+            try:
+                limit = min(int(limit_param or 50), 200)
+            except ValueError:
+                limit = 50
+            try:
+                offset = max(int(offset_param or 0), 0)
+            except ValueError:
+                offset = 0
+            records = records[offset : offset + limit]
+
         serializer = AttendanceRecordSerializer(records, many=True)
         return Response(serializer.data)
 
@@ -353,6 +423,95 @@ class AttendanceOverrideView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save(edited_by=request.user)
         return Response(AttendanceRecordSerializer(record).data)
+
+
+class TeacherSessionCreateView(APIView):
+    """
+    POST /api/teacher/sessions/
+    Creates a new session for a teacher's classroom on demand.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        serializer = SessionCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        classroom = serializer.validated_data["class_room"]
+
+        if hasattr(request.user, "teacher_profile") and not request.user.is_staff:
+            if classroom.teacher != request.user.teacher_profile:
+                return Response({"error": "Not authorized to create sessions for this classroom."}, status=status.HTTP_403_FORBIDDEN)
+
+        session = serializer.save()
+        return Response(SessionSerializer(session).data, status=status.HTTP_201_CREATED)
+
+
+class TeacherSessionRosterView(APIView):
+    """
+    GET /api/teacher/sessions/{session_id}/roster/
+    Returns all enrolled students in the session's classroom, showing their current attendance status.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, session_id):
+        session = get_object_or_404(Session.objects.select_related("class_room", "class_room__teacher"), id=session_id)
+        if hasattr(request.user, "teacher_profile") and not request.user.is_staff:
+            if session.class_room.teacher != request.user.teacher_profile:
+                return Response({"error": "Not authorized to view roster for this session."}, status=status.HTTP_403_FORBIDDEN)
+
+        classroom = session.class_room
+        students = classroom.students.filter(is_active=True).order_by("full_name")
+
+        records = AttendanceRecord.objects.filter(session=session)
+        record_map = {r.student_id: r for r in records}
+
+        roster = []
+        summary = {"present": 0, "late": 0, "absent": 0, "unmarked": 0, "total": students.count()}
+
+        for st in students:
+            rec = record_map.get(st.id)
+            if rec:
+                att_status = rec.status
+                method = rec.method
+                checked_in_at = rec.checked_in_at
+                confidence_score = rec.confidence_score
+                record_id = rec.id
+                is_deleted = rec.is_deleted
+                if not is_deleted:
+                    summary[att_status] = summary.get(att_status, 0) + 1
+            else:
+                att_status = "unmarked"
+                method = None
+                checked_in_at = None
+                confidence_score = None
+                record_id = None
+                is_deleted = False
+                summary["unmarked"] += 1
+
+            roster.append({
+                "id": st.id,
+                "student_id": st.student_id,
+                "full_name": st.full_name,
+                "is_active": st.is_active,
+                "guardian_contact": st.guardian_contact,
+                "attendance_status": att_status,
+                "method": method,
+                "checked_in_at": checked_in_at,
+                "confidence_score": confidence_score,
+                "record_id": record_id,
+                "is_deleted": is_deleted,
+            })
+
+        serializer = SessionRosterItemSerializer(roster, many=True)
+        return Response({
+            "session_id": session.id,
+            "class_room": classroom.name,
+            "date": session.date,
+            "start_time": session.start_time,
+            "end_time": session.end_time,
+            "is_ended": session.ended_at is not None,
+            "summary": summary,
+            "roster": serializer.data,
+        })
 
 
 # ----------------------------------------------------------------------
@@ -592,3 +751,394 @@ class StudentReportView(APIView):
             "absent_count": counts["absent_count"],
             "attendance_rate": present_pct,
         })
+
+
+# ----------------------------------------------------------------------
+# API Root, Healthcheck & Interactive Docs
+# ----------------------------------------------------------------------
+
+class ApiRootView(APIView):
+    """
+    GET /api/
+    Service discovery and endpoint index.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        return Response({
+            "name": "Smart Attendance System REST API",
+            "version": "v1",
+            "status": "operational",
+            "documentation": "/api/docs/",
+            "endpoints": {
+                "auth": {
+                    "login": "/api/auth/login/",
+                    "logout": "/api/auth/logout/",
+                    "change_password": "/api/auth/change-password/",
+                },
+                "students": {
+                    "profile": "/api/students/me/",
+                    "attendance_history": "/api/attendance/history/",
+                    "qr_checkin": "/api/attendance/checkin/qr/",
+                    "face_checkin": "/api/attendance/checkin/face/",
+                    "face_enroll": "/api/face/enroll/",
+                },
+                "teachers": {
+                    "today_classes": "/api/teacher/classes/today/",
+                    "create_session": "/api/teacher/sessions/",
+                    "session_roster": "/api/teacher/sessions/{id}/roster/",
+                    "rotate_qr": "/api/teacher/sessions/{id}/qr/",
+                    "dynamic_qr": "/api/teacher/sessions/{id}/qr/dynamic/",
+                    "live_qr_screen": "/api/teacher/sessions/{id}/live-qr/",
+                    "end_session": "/api/teacher/sessions/{id}/end/",
+                    "override_attendance": "/api/teacher/attendance/{id}/",
+                },
+                "reports": {
+                    "class_report": "/api/reports/class/{id}/",
+                    "student_report": "/api/reports/student/{id}/",
+                },
+                "health": "/api/health/",
+                "schema": "/api/schema/",
+            }
+        })
+
+
+class HealthCheckView(APIView):
+    """
+    GET /api/health/
+    System health status check for DB, Redis, Celery and Face Recognition.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        from django.db import connection
+        import redis
+
+        # DB check
+        db_ok = True
+        db_err = None
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1;")
+        except Exception as exc:
+            db_ok = False
+            db_err = str(exc)
+
+        # Redis check
+        redis_ok = True
+        redis_err = None
+        try:
+            r = redis.from_url(getattr(settings, "CELERY_BROKER_URL", "redis://redis:6379/0"))
+            r.ping()
+        except Exception as exc:
+            redis_ok = False
+            redis_err = str(exc)
+
+        # Face Recognition module check
+        face_model_ok = True
+        try:
+            from recognition.services import get_face_app
+            face_model_ok = True
+        except Exception:
+            face_model_ok = False
+
+        overall_status = "healthy" if (db_ok and redis_ok) else "degraded"
+
+        return Response({
+            "status": overall_status,
+            "timestamp": timezone.now().isoformat(),
+            "services": {
+                "database": {"status": "up" if db_ok else "down", "error": db_err},
+                "redis": {"status": "up" if redis_ok else "down", "error": redis_err},
+                "face_recognition": {"status": "ready" if face_model_ok else "warning"},
+            }
+        }, status=status.HTTP_200_OK if overall_status == "healthy" else status.HTTP_503_SERVICE_UNAVAILABLE)
+
+
+def api_docs_view(request):
+    """
+    GET /api/docs/
+    Renders interactive Swagger UI documentation console.
+    """
+    from django.shortcuts import render
+    return render(request, "attendance/api_docs.html")
+
+
+def api_schema_view(request):
+    """
+    GET /api/schema/
+    Returns OpenAPI 3.0 specification in JSON format.
+    """
+    from django.http import JsonResponse
+
+    schema = {
+        "openapi": "3.0.3",
+        "info": {
+            "title": "Smart Attendance System API",
+            "version": "1.0.0",
+            "description": "REST API documentation for Student & Teacher Attendance tracking, QR code check-in, Face Recognition, and Reports.",
+        },
+        "servers": [{"url": "/api", "description": "Current Server API Root"}],
+        "tags": [
+            {"name": "Auth", "description": "Authentication and user credentials"},
+            {"name": "Students", "description": "Student attendance, check-in, and profiles"},
+            {"name": "Teachers", "description": "Teacher sessions, live rosters, and QR rotation"},
+            {"name": "Reports", "description": "Class and student aggregated attendance analytics"},
+            {"name": "System", "description": "System health and discovery"},
+        ],
+        "components": {
+            "securitySchemes": {
+                "TokenAuth": {
+                    "type": "apiKey",
+                    "in": "header",
+                    "name": "Authorization",
+                    "description": "Enter your token as: Token <your_token>",
+                }
+            }
+        },
+        "paths": {
+            "/auth/login/": {
+                "post": {
+                    "tags": ["Auth"],
+                    "summary": "Authenticate user and get API Token",
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "username": {"type": "string", "example": "teacher_sokha"},
+                                        "password": {"type": "string", "example": "TeacherPassword123!"},
+                                    },
+                                    "required": ["username", "password"],
+                                }
+                            }
+                        },
+                    },
+                    "responses": {"200": {"description": "Token and profile info returned"}},
+                }
+            },
+            "/auth/logout/": {
+                "post": {
+                    "tags": ["Auth"],
+                    "summary": "Revoke the current authentication token",
+                    "security": [{"TokenAuth": []}],
+                    "responses": {"200": {"description": "Token revoked successfully"}},
+                }
+            },
+            "/auth/change-password/": {
+                "post": {
+                    "tags": ["Auth"],
+                    "summary": "Change current user's password",
+                    "security": [{"TokenAuth": []}],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "old_password": {"type": "string"},
+                                        "new_password": {"type": "string"},
+                                        "confirm_password": {"type": "string"},
+                                    },
+                                    "required": ["old_password", "new_password", "confirm_password"],
+                                }
+                            }
+                        },
+                    },
+                    "responses": {"200": {"description": "Password updated successfully"}},
+                }
+            },
+            "/students/me/": {
+                "get": {
+                    "tags": ["Students"],
+                    "summary": "Get authenticated student profile",
+                    "security": [{"TokenAuth": []}],
+                    "responses": {"200": {"description": "Student profile data"}},
+                }
+            },
+            "/attendance/checkin/qr/": {
+                "post": {
+                    "tags": ["Students"],
+                    "summary": "Check in student via scanned QR code token",
+                    "security": [{"TokenAuth": []}],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "qr_token": {"type": "string"},
+                                    },
+                                    "required": ["qr_token"],
+                                }
+                            }
+                        },
+                    },
+                    "responses": {"200": {"description": "Checked in"}},
+                }
+            },
+            "/attendance/checkin/face/": {
+                "post": {
+                    "tags": ["Students"],
+                    "summary": "Check in via webcam face capture",
+                    "security": [{"TokenAuth": []}],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "multipart/form-data": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "image": {"type": "string", "format": "binary"},
+                                        "session_id": {"type": "integer"},
+                                    },
+                                    "required": ["image"],
+                                }
+                            }
+                        },
+                    },
+                    "responses": {"200": {"description": "Match result"}},
+                }
+            },
+            "/attendance/history/": {
+                "get": {
+                    "tags": ["Students"],
+                    "summary": "List personal attendance history records",
+                    "security": [{"TokenAuth": []}],
+                    "parameters": [
+                        {"name": "status", "in": "query", "schema": {"type": "string", "enum": ["present", "late", "absent"]}},
+                        {"name": "date_from", "in": "query", "schema": {"type": "string", "format": "date"}},
+                        {"name": "date_to", "in": "query", "schema": {"type": "string", "format": "date"}},
+                        {"name": "limit", "in": "query", "schema": {"type": "integer"}},
+                        {"name": "offset", "in": "query", "schema": {"type": "integer"}},
+                    ],
+                    "responses": {"200": {"description": "List of attendance records"}},
+                }
+            },
+            "/teacher/classes/today/": {
+                "get": {
+                    "tags": ["Teachers"],
+                    "summary": "List all sessions scheduled for today for the teacher",
+                    "security": [{"TokenAuth": []}],
+                    "responses": {"200": {"description": "List of sessions"}},
+                }
+            },
+            "/teacher/sessions/": {
+                "post": {
+                    "tags": ["Teachers"],
+                    "summary": "Create a new classroom session on-demand",
+                    "security": [{"TokenAuth": []}],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "class_room": {"type": "integer"},
+                                        "date": {"type": "string", "format": "date"},
+                                        "start_time": {"type": "string", "example": "08:00:00"},
+                                        "end_time": {"type": "string", "example": "10:00:00"},
+                                        "auto_generate_qr": {"type": "boolean", "default": True},
+                                        "qr_expiry_minutes": {"type": "integer", "default": 120},
+                                    },
+                                    "required": ["class_room", "date", "start_time", "end_time"],
+                                }
+                            }
+                        },
+                    },
+                    "responses": {"201": {"description": "Session created"}},
+                }
+            },
+            "/teacher/sessions/{session_id}/roster/": {
+                "get": {
+                    "tags": ["Teachers"],
+                    "summary": "Get full student roster and live check-in statuses for a session",
+                    "security": [{"TokenAuth": []}],
+                    "parameters": [{"name": "session_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                    "responses": {"200": {"description": "Roster and summary"}},
+                }
+            },
+            "/teacher/sessions/{session_id}/qr/": {
+                "post": {
+                    "tags": ["Teachers"],
+                    "summary": "Rotate / refresh session QR code",
+                    "security": [{"TokenAuth": []}],
+                    "parameters": [{"name": "session_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                    "requestBody": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {"expiry_minutes": {"type": "integer", "default": 10}},
+                                }
+                            }
+                        }
+                    },
+                    "responses": {"200": {"description": "New QR token"}},
+                }
+            },
+            "/teacher/sessions/{session_id}/end/": {
+                "post": {
+                    "tags": ["Teachers"],
+                    "summary": "End session and trigger automatic absence notifications",
+                    "security": [{"TokenAuth": []}],
+                    "parameters": [{"name": "session_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                    "responses": {"200": {"description": "Session closed and Celery alert task dispatched"}},
+                }
+            },
+            "/teacher/attendance/{record_id}/": {
+                "patch": {
+                    "tags": ["Teachers"],
+                    "summary": "Manual override of student attendance status",
+                    "security": [{"TokenAuth": []}],
+                    "parameters": [{"name": "record_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "status": {"type": "string", "enum": ["present", "late", "absent"]},
+                                        "is_deleted": {"type": "boolean"},
+                                    },
+                                }
+                            }
+                        },
+                    },
+                    "responses": {"200": {"description": "Updated attendance record"}},
+                }
+            },
+            "/reports/class/{class_id}/": {
+                "get": {
+                    "tags": ["Reports"],
+                    "summary": "Aggregated attendance metrics for a classroom",
+                    "security": [{"TokenAuth": []}],
+                    "parameters": [{"name": "class_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                    "responses": {"200": {"description": "Aggregated stats"}},
+                }
+            },
+            "/reports/student/{student_id}/": {
+                "get": {
+                    "tags": ["Reports"],
+                    "summary": "Aggregated attendance stats for a student",
+                    "security": [{"TokenAuth": []}],
+                    "parameters": [{"name": "student_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                    "responses": {"200": {"description": "Student stats"}},
+                }
+            },
+            "/health/": {
+                "get": {
+                    "tags": ["System"],
+                    "summary": "System and dependency healthcheck (DB, Redis, Celery, InsightFace)",
+                    "responses": {"200": {"description": "Services health status"}},
+                }
+            },
+        },
+    }
+    return JsonResponse(schema)

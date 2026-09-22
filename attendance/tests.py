@@ -4,6 +4,7 @@ from django.contrib.auth.models import User
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework import status
+from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
 from students.models import Student
@@ -280,3 +281,91 @@ class SmartAttendanceTests(TestCase):
         self.assertEqual(stu_rep.status_code, status.HTTP_200_OK)
         self.assertEqual(stu_rep.data["present_count"], 1)
         self.assertEqual(stu_rep.data["attendance_rate"], 100.0)
+
+    def test_logout(self):
+        token, _ = Token.objects.get_or_create(user=self.student_user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+        logout_resp = self.client.post("/api/auth/logout/")
+        self.assertEqual(logout_resp.status_code, status.HTTP_200_OK)
+        self.assertFalse(Token.objects.filter(user=self.student_user).exists())
+
+        # Next request with same token should be unauthorized
+        profile_resp = self.client.get("/api/students/me/")
+        self.assertEqual(profile_resp.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_change_password(self):
+        token, _ = Token.objects.get_or_create(user=self.student_user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+        # Wrong old password
+        bad_resp = self.client.post("/api/auth/change-password/", {
+            "old_password": "wrong-password",
+            "new_password": "new-secret-password-123",
+            "confirm_password": "new-secret-password-123",
+        })
+        self.assertEqual(bad_resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+        # Successful change
+        ok_resp = self.client.post("/api/auth/change-password/", {
+            "old_password": "password123",
+            "new_password": "new-secret-password-123",
+            "confirm_password": "new-secret-password-123",
+        })
+        self.assertEqual(ok_resp.status_code, status.HTTP_200_OK)
+        self.student_user.refresh_from_db()
+        self.assertTrue(self.student_user.check_password("new-secret-password-123"))
+
+    def test_teacher_session_create(self):
+        self.client.force_authenticate(user=self.teacher_user)
+        resp = self.client.post("/api/teacher/sessions/", {
+            "class_room": self.classroom.id,
+            "date": str(timezone.localdate()),
+            "start_time": "14:00:00",
+            "end_time": "16:00:00",
+            "auto_generate_qr": True,
+            "qr_expiry_minutes": 60,
+        })
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertIsNotNone(resp.data["qr_token"])
+        self.assertTrue(resp.data["is_qr_valid"])
+
+    def test_teacher_session_roster(self):
+        AttendanceRecord.objects.create(student=self.student, session=self.session, status="present", method="qr")
+        self.client.force_authenticate(user=self.teacher_user)
+
+        resp = self.client.get(f"/api/teacher/sessions/{self.session.id}/roster/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data["summary"]["present"], 1)
+        self.assertEqual(resp.data["summary"]["unmarked"], 1)
+        self.assertEqual(len(resp.data["roster"]), 2)
+
+    def test_filtered_attendance_history(self):
+        AttendanceRecord.objects.create(student=self.student, session=self.session, status="present", method="qr")
+        self.client.force_authenticate(user=self.student_user)
+
+        # Filter by status=present
+        resp = self.client.get("/api/attendance/history/?status=present")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(resp.data), 1)
+
+        # Filter by status=absent -> should be empty
+        resp2 = self.client.get("/api/attendance/history/?status=absent")
+        self.assertEqual(resp2.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(resp2.data), 0)
+
+    def test_api_root_and_health(self):
+        root_resp = self.client.get("/api/")
+        self.assertEqual(root_resp.status_code, status.HTTP_200_OK)
+        self.assertIn("endpoints", root_resp.data)
+
+        health_resp = self.client.get("/api/health/")
+        self.assertIn(health_resp.status_code, [status.HTTP_200_OK, status.HTTP_503_SERVICE_UNAVAILABLE])
+        self.assertIn("services", health_resp.data)
+
+    def test_api_docs_and_schema(self):
+        schema_resp = self.client.get("/api/schema/")
+        self.assertEqual(schema_resp.status_code, 200)
+
+        docs_resp = self.client.get("/api/docs/")
+        self.assertEqual(docs_resp.status_code, 200)

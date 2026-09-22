@@ -41,6 +41,42 @@ Authenticates a student or teacher user and returns an API token and role.
 
 ---
 
+### `POST /api/auth/logout/`
+Revokes/deletes the authenticated user's API token.
+
+- **Auth Required:** Yes (`Token <token>`)
+- **Response `200 OK`:**
+```json
+{
+  "message": "Successfully logged out. Token revoked."
+}
+```
+
+---
+
+### `POST /api/auth/change-password/`
+Allows an authenticated student or teacher to update their password.
+
+- **Auth Required:** Yes (`Token <token>`)
+- **Content-Type:** `application/json`
+- **Request Body:**
+```json
+{
+  "old_password": "current_password",
+  "new_password": "new_secret_password_123",
+  "confirm_password": "new_secret_password_123"
+}
+```
+- **Response `200 OK`:**
+```json
+{
+  "message": "Password changed successfully.",
+  "token": "new_or_refreshed_token_key"
+}
+```
+
+---
+
 ### `GET /api/students/me/`
 Returns current profile for the authenticated student.
 
@@ -224,6 +260,80 @@ Returns sessions scheduled today for the authenticated teacher.
 
 ---
 
+### `POST /api/teacher/sessions/`
+Creates a new classroom session on-demand for a teacher.
+
+- **Auth Required:** Yes (Teacher or Admin)
+- **Content-Type:** `application/json`
+- **Request Body:**
+```json
+{
+  "class_room": 1,
+  "date": "2026-09-22",
+  "start_time": "08:00:00",
+  "end_time": "10:00:00",
+  "auto_generate_qr": true,
+  "qr_expiry_minutes": 120
+}
+```
+- **Response `201 Created`:**
+```json
+{
+  "id": 8,
+  "class_room": { "id": 1, "name": "CS101", "teacher": { "id": 1, "name": "Professor Smith" } },
+  "date": "2026-09-22",
+  "start_time": "08:00:00",
+  "end_time": "10:00:00",
+  "qr_token": "token_xyz...",
+  "qr_token_expires_at": "2026-09-22T10:00:00Z",
+  "ended_at": null,
+  "is_ended": false,
+  "is_qr_valid": true
+}
+```
+
+---
+
+### `GET /api/teacher/sessions/{id}/roster/`
+Returns the active classroom roster for a session showing live check-in statuses (`present`, `late`, `absent`, or `unmarked`).
+
+- **Auth Required:** Yes (Teacher or Admin)
+- **Response `200 OK`:**
+```json
+{
+  "session_id": 8,
+  "class_room": "CS101",
+  "date": "2026-09-22",
+  "start_time": "08:00:00",
+  "end_time": "10:00:00",
+  "is_ended": false,
+  "summary": {
+    "present": 18,
+    "late": 2,
+    "absent": 0,
+    "unmarked": 5,
+    "total": 25
+  },
+  "roster": [
+    {
+      "student_pk": 1,
+      "student_id": "STU001",
+      "student_name": "Alice Johnson",
+      "is_active": true,
+      "guardian_contact": "@parent_telegram",
+      "attendance_status": "present",
+      "method": "qr",
+      "checked_in_at": "2026-09-22T08:05:12Z",
+      "confidence_score": null,
+      "record_id": 42,
+      "is_deleted": false
+    }
+  ]
+}
+```
+
+---
+
 ### `POST /api/teacher/sessions/{id}/qr/`
 Generates or rotates a dynamic QR code token with expiry.
 
@@ -321,3 +431,31 @@ Manual override of an attendance record.
   "attendance_rate": 91.7
 }
 ```
+
+---
+
+## 6. System, Discovery & Interactive Docs
+
+### `GET /api/`
+API discovery root endpoint with route links and version status.
+
+### `GET /api/health/`
+Health status check for database, Redis broker, Celery worker, and face recognition models.
+- **Response `200 OK`:**
+```json
+{
+  "status": "healthy",
+  "timestamp": "2026-09-22T16:00:00Z",
+  "services": {
+    "database": { "status": "up", "error": null },
+    "redis": { "status": "up", "error": null },
+    "face_recognition": { "status": "ready" }
+  }
+}
+```
+
+### `GET /api/docs/`
+Interactive Swagger UI console for browser testing and API discovery.
+
+### `GET /api/schema/`
+OpenAPI 3.0 specification in JSON format (ready for Postman import and Flutter code generator).
