@@ -1,2 +1,431 @@
-{% extends "base.html" %}{% block content %}<h1 class="h3">Enroll {{ student.full_name }}</h1><p>Student ID: {{ student.student_id }}. Upload a temporary camera frame only after written consent is recorded.</p><form method="post" enctype="multipart/form-data">{% csrf_token %}{{ form.as_p }}<button class="btn btn-primary">Create biometric template</button></form><form class="mt-4" method="post" action="{% url 'students:revoke' student.student_id %}">{% csrf_token %}<button class="btn btn-outline-danger">Revoke consent and delete template</button></form>{% endblock %}
+{% extends "base.html" %}
 
+{% block content %}
+<div class="container pb-5">
+  <!-- Navigation / Breadcrumb -->
+  <nav aria-label="breadcrumb" class="mb-3">
+    <ol class="breadcrumb">
+      <li class="breadcrumb-item"><a href="{% url 'students:manual_lookup' %}">Students</a></li>
+      <li class="breadcrumb-item active" aria-current="page">Enroll {{ student.full_name }}</li>
+    </ol>
+  </nav>
+
+  <!-- Student Header & Status Card -->
+  <div class="card shadow-sm border-0 mb-4 bg-white">
+    <div class="card-body p-4">
+      <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
+        <div>
+          <div class="d-flex align-items-center gap-2 mb-1">
+            <h1 class="h3 mb-0">{{ student.full_name }}</h1>
+            {% if is_enrolled %}
+              <span class="badge bg-success px-3 py-2 fs-6">
+                ✓ Enrolled ({{ total_templates }} template{{ total_templates|pluralize }})
+              </span>
+            {% else %}
+              <span class="badge bg-secondary px-3 py-2 fs-6">
+                Not Enrolled
+              </span>
+            {% endif %}
+          </div>
+          <div class="text-muted small d-flex flex-wrap gap-3">
+            <span><strong>ID:</strong> {{ student.student_id }}</span>
+            <span><strong>Class:</strong> {{ student.class_room.name|default:"Not Assigned" }}</span>
+            <span><strong>Year:</strong> {{ student.class_year|default:"Not Recorded" }}</span>
+            {% if student.guardian_contact %}
+              <span><strong>Guardian:</strong> {{ student.guardian_contact }}</span>
+            {% endif %}
+          </div>
+        </div>
+
+        {% if is_enrolled %}
+          <div>
+            <button type="button" class="btn btn-outline-danger btn-sm" data-bs-toggle="modal" data-bs-target="#revokeModal">
+              Revoke Consent &amp; Delete Templates
+            </button>
+          </div>
+        {% endif %}
+      </div>
+
+      {% if student.consent_given_at %}
+        <hr class="my-3">
+        <div class="row text-muted small g-2">
+          <div class="col-md-6">
+            <strong>Active Consent Reference:</strong> {{ student.consent_reference|default:"On File" }}
+          </div>
+          <div class="col-md-6">
+            <strong>Consent Granted At:</strong> {{ student.consent_given_at|date:"M d, Y H:i" }}
+          </div>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Enrollment Form -->
+  <div class="card shadow-sm border-0">
+    <div class="card-header bg-white border-bottom py-3">
+      <h2 class="h5 mb-0">Biometric Face Enrollment</h2>
+      <small class="text-muted">
+        Temporary frames are processed in RAM to compute biometric vectors and are immediately discarded. No photos are stored.
+      </small>
+    </div>
+
+    <div class="card-body p-4">
+      <form method="post" enctype="multipart/form-data" id="enrollment-form">
+        {% csrf_token %}
+
+        {% if form.non_field_errors %}
+          <div class="alert alert-danger">
+            {% for error in form.non_field_errors %}
+              <div>{{ error }}</div>
+            {% endfor %}
+          </div>
+        {% endif %}
+
+        <!-- Input Mode Tabs: Live Camera vs File Upload -->
+        <ul class="nav nav-pills mb-4" id="enrollTabs" role="tablist">
+          <li class="nav-item" role="presentation">
+            <button class="nav-link active px-4" id="camera-tab" data-bs-toggle="pill" data-bs-target="#camera-content" type="button" role="tab">
+              📷 Live Camera
+            </button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link px-4" id="file-tab" data-bs-toggle="pill" data-bs-target="#file-content" type="button" role="tab">
+              📁 Upload Photos
+            </button>
+          </li>
+        </ul>
+
+        <div class="tab-content" id="enrollTabsContent">
+          <!-- TAB 1: Live Camera Stream -->
+          <div class="tab-pane fade show active" id="camera-content" role="tabpanel">
+            <div class="row g-4">
+              <div class="col-lg-7">
+                <div class="position-relative bg-dark rounded overflow-hidden" style="min-height: 360px;">
+                  <video id="webcam" class="w-100 h-100" autoplay playsinline style="max-height: 420px; object-fit: cover;"></video>
+                  
+                  <!-- Face Framing Oval Guide -->
+                  <div class="position-absolute top-50 start-50 translate-middle pointer-events-none border border-2 border-white rounded-pill opacity-75"
+                       style="width: 220px; height: 300px; box-shadow: 0 0 0 9999px rgba(0,0,0,0.35);">
+                    <div class="text-center text-white small mt-2 fw-semibold opacity-75">Position face inside</div>
+                  </div>
+                  
+                  <div id="camera-error" class="position-absolute top-50 start-50 translate-middle text-white text-center d-none p-3">
+                    <p class="mb-2">⚠️ Camera access unavailable or permission denied.</p>
+                    <button type="button" class="btn btn-sm btn-light" id="retry-camera">Retry Permission</button>
+                  </div>
+                </div>
+
+                <div class="d-flex flex-wrap align-items-center gap-2 mt-3">
+                  <div class="me-2">
+                    <select id="snap-angle" class="form-select form-select-sm" style="width: auto;">
+                      <option value="front">Angle: Front</option>
+                      <option value="left">Angle: Slight Left</option>
+                      <option value="right">Angle: Slight Right</option>
+                      <option value="tilt_up">Angle: Slight Up</option>
+                    </select>
+                  </div>
+                  <button type="button" id="snap-btn" class="btn btn-primary">
+                    Capture Angle Frame
+                  </button>
+                  <button type="button" id="clear-snaps-btn" class="btn btn-outline-secondary btn-sm ms-auto d-none">
+                    Clear All Frames
+                  </button>
+                </div>
+                <small class="text-muted d-block mt-2">
+                  Tip: Capture 1 to 5 frames at slightly different angles for highest attendance accuracy.
+                </small>
+              </div>
+
+              <!-- Captured Snapshots Gallery -->
+              <div class="col-lg-5">
+                <h3 class="h6 mb-2">Captured Frames (<span id="snap-count">0</span> / 5)</h3>
+                <div id="snaps-container" class="row g-2" style="min-height: 120px;">
+                  <div id="no-snaps-msg" class="col-12 text-muted fst-italic p-4 text-center border rounded bg-light">
+                    No frames captured yet. Click "Capture Angle Frame" to record biometric angles.
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- TAB 2: File Upload (Multi-angle) -->
+          <div class="tab-pane fade" id="file-content" role="tabpanel">
+            <div class="p-3 border rounded bg-light mb-3">
+              <label for="id_image" class="form-label fw-bold">Select 1 to 5 Face Photos</label>
+              <input type="file" name="images" id="id_images_picker" class="form-control" accept="image/*" multiple>
+              <div class="form-text mt-2">
+                Supported formats: JPG, PNG. Ensure adequate lighting and single face in each frame.
+              </div>
+            </div>
+
+            <!-- Upload Previews -->
+            <div id="file-previews" class="row g-2 mt-2"></div>
+          </div>
+        </div>
+
+        <hr class="my-4">
+
+        <!-- Consent Reference & Compliance Confirmation -->
+        <div class="bg-light p-3 rounded mb-4">
+          <h3 class="h6 mb-3">Institutional Consent &amp; Compliance</h3>
+          
+          <div class="mb-3">
+            <label for="{{ form.consent_reference.id_for_label }}" class="form-label fw-semibold">
+              {{ form.consent_reference.label }} <span class="text-danger">*</span>
+            </label>
+            {{ form.consent_reference }}
+            {% if form.consent_reference.help_text %}
+              <div class="form-text">{{ form.consent_reference.help_text }}</div>
+            {% endif %}
+            {% for error in form.consent_reference.errors %}
+              <div class="text-danger small mt-1">{{ error }}</div>
+            {% endfor %}
+          </div>
+
+          <div class="form-check">
+            {{ form.consent_confirmed }}
+            <label class="form-check-label fw-semibold" for="{{ form.consent_confirmed.id_for_label }}">
+              {{ form.consent_confirmed.label }}
+            </label>
+            {% for error in form.consent_confirmed.errors %}
+              <div class="text-danger small mt-1">{{ error }}</div>
+            {% endfor %}
+          </div>
+        </div>
+
+        {% for error in form.image.errors %}
+          <div class="alert alert-danger py-2 small">{{ error }}</div>
+        {% endfor %}
+
+        <!-- Hidden container for camera captured files -->
+        <div id="hidden-file-inputs" class="d-none"></div>
+
+        <!-- Submit Button -->
+        <div class="d-flex justify-content-between align-items-center">
+          <a href="{% url 'students:manual_lookup' %}" class="btn btn-outline-secondary">
+            Cancel
+          </a>
+          <button type="submit" id="submit-enroll-btn" class="btn btn-primary px-4 py-2">
+            <span id="btn-text">Generate Biometric Template(s)</span>
+            <span id="btn-spinner" class="spinner-border spinner-border-sm d-none ms-2" role="status"></span>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Revocation Confirmation Modal -->
+{% if is_enrolled %}
+<div class="modal fade" id="revokeModal" tabindex="-1" aria-labelledby="revokeModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header bg-danger text-white">
+        <h5 class="modal-title" id="revokeModalLabel">Revoke Biometric Consent</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="mb-3">
+          Are you sure you want to revoke biometric consent for <strong>{{ student.full_name }}</strong>?
+        </p>
+        <div class="alert alert-warning small mb-0">
+          <strong>Consequences:</strong>
+          <ul class="mb-0 ps-3 mt-1">
+            <li>All <strong>{{ total_templates }}</strong> stored facial template(s) will be permanently deleted from the biometric database.</li>
+            <li>Consent timestamp and reference will be cleared.</li>
+            <li>The student will no longer be eligible for facial recognition check-in.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <form method="post" action="{% url 'students:revoke' student.student_id %}" class="d-inline">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-danger">Yes, Revoke &amp; Delete</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<!-- Hidden Canvas for frame extraction -->
+<canvas id="capture-canvas" class="d-none"></canvas>
+
+<!-- Client JavaScript for Camera & Multi-Frame Handling -->
+<script>
+(function() {
+  const video = document.getElementById('webcam');
+  const canvas = document.getElementById('capture-canvas');
+  const snapBtn = document.getElementById('snap-btn');
+  const snapAngle = document.getElementById('snap-angle');
+  const snapsContainer = document.getElementById('snaps-container');
+  const noSnapsMsg = document.getElementById('no-snaps-msg');
+  const snapCountSpan = document.getElementById('snap-count');
+  const clearSnapsBtn = document.getElementById('clear-snaps-btn');
+  const cameraError = document.getElementById('camera-error');
+  const retryBtn = document.getElementById('retry-camera');
+  const filePicker = document.getElementById('id_images_picker');
+  const filePreviews = document.getElementById('file-previews');
+  const form = document.getElementById('enrollment-form');
+  const submitBtn = document.getElementById('submit-enroll-btn');
+  const btnText = document.getElementById('btn-text');
+  const btnSpinner = document.getElementById('btn-spinner');
+
+  let stream = null;
+  const capturedBlobs = []; // Array of { blob, label, id }
+
+  // Start Webcam Stream
+  function initCamera() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      showCameraError();
+      return;
+    }
+    navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+      audio: false
+    }).then(s => {
+      stream = s;
+      video.srcObject = s;
+      cameraError.classList.add('d-none');
+    }).catch(err => {
+      console.warn("Camera error:", err);
+      showCameraError();
+    });
+  }
+
+  function showCameraError() {
+    cameraError.classList.remove('d-none');
+  }
+
+  retryBtn.addEventListener('click', initCamera);
+  initCamera();
+
+  // Snapshot Capture
+  snapBtn.addEventListener('click', () => {
+    if (!video.videoWidth || !video.videoHeight) return;
+    if (capturedBlobs.length >= 5) {
+      alert("Maximum 5 frames can be captured.");
+      return;
+    }
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0);
+
+    canvas.toBlob(blob => {
+      const angleLabel = snapAngle.options[snapAngle.selectedIndex].text.replace('Angle: ', '');
+      const item = {
+        id: Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+        blob: blob,
+        label: angleLabel,
+        previewUrl: URL.createObjectURL(blob)
+      };
+      capturedBlobs.push(item);
+      renderSnaps();
+
+      // Cycle angle option for convenience
+      if (snapAngle.selectedIndex < snapAngle.options.length - 1) {
+        snapAngle.selectedIndex += 1;
+      }
+    }, 'image/jpeg', 0.92);
+  });
+
+  function renderSnaps() {
+    snapCountSpan.textContent = capturedBlobs.length;
+    if (capturedBlobs.length === 0) {
+      noSnapsMsg.classList.remove('d-none');
+      clearSnapsBtn.classList.add('d-none');
+      snapsContainer.querySelectorAll('.snap-card').forEach(e => e.remove());
+      return;
+    }
+
+    noSnapsMsg.classList.add('d-none');
+    clearSnapsBtn.classList.remove('d-none');
+    snapsContainer.querySelectorAll('.snap-card').forEach(e => e.remove());
+
+    capturedBlobs.forEach((item, idx) => {
+      const col = document.createElement('div');
+      col.className = 'col-6 col-sm-4 snap-card';
+      col.innerHTML = `
+        <div class="card h-100 shadow-sm position-relative overflow-hidden">
+          <img src="${item.previewUrl}" class="card-img-top" style="height: 100px; object-fit: cover;">
+          <div class="card-body p-2 text-center">
+            <span class="badge bg-secondary mb-1">${item.label}</span>
+            <button type="button" class="btn btn-sm btn-outline-danger w-100 py-0" style="font-size: 0.75rem;" data-id="${item.id}">
+              Remove
+            </button>
+          </div>
+        </div>
+      `;
+      col.querySelector('button').addEventListener('click', () => {
+        const index = capturedBlobs.findIndex(b => b.id === item.id);
+        if (index > -1) {
+          URL.revokeObjectURL(capturedBlobs[index].previewUrl);
+          capturedBlobs.splice(index, 1);
+          renderSnaps();
+        }
+      });
+      snapsContainer.appendChild(col);
+    });
+  }
+
+  clearSnapsBtn.addEventListener('click', () => {
+    capturedBlobs.forEach(item => URL.revokeObjectURL(item.previewUrl));
+    capturedBlobs.length = 0;
+    renderSnaps();
+  });
+
+  // File Picker Previews
+  filePicker.addEventListener('change', () => {
+    filePreviews.innerHTML = '';
+    const files = Array.from(filePicker.files).slice(0, 5);
+    files.forEach((file, idx) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const col = document.createElement('div');
+        col.className = 'col-6 col-md-3';
+        col.innerHTML = `
+          <div class="card h-100 shadow-sm">
+            <img src="${e.target.result}" class="card-img-top" style="height: 110px; object-fit: cover;">
+            <div class="card-body p-2 text-center small text-truncate">
+              Photo ${idx + 1}
+            </div>
+          </div>
+        `;
+        filePreviews.appendChild(col);
+      };
+      reader.readAsDataURL(file);
+    });
+  });
+
+  // Form Submit Handler
+  form.addEventListener('submit', (e) => {
+    // If we have captured camera blobs and active tab is camera, attach them to the form
+    const activeTab = document.querySelector('#enrollTabs .nav-link.active');
+    if (activeTab && activeTab.id === 'camera-tab' && capturedBlobs.length > 0) {
+      const dt = new DataTransfer();
+      capturedBlobs.forEach((item, index) => {
+        const f = new File([item.blob], `snapshot_${index + 1}.jpg`, { type: 'image/jpeg' });
+        dt.items.add(f);
+      });
+      // Attach to filePicker
+      filePicker.files = dt.files;
+    }
+
+    // Show spinner
+    submitBtn.disabled = true;
+    btnText.textContent = 'Processing Biometrics...';
+    btnSpinner.classList.remove('d-none');
+  });
+
+  // Cleanup camera stream on page unload
+  window.addEventListener('beforeunload', () => {
+    if (stream) {
+      stream.getTracks().forEach(t => t.stop());
+    }
+  });
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-8 col-lg-6">
+    <div class="card border-danger shadow-sm">
+      <div class="card-header bg-danger text-white">
+        <h2 class="h5 mb-0">Revoke Biometric Consent</h2>
+      </div>
+      <div class="card-body">
+        <p class="lead">
+          Are you sure you want to revoke biometric consent for <strong>{{ student.full_name }}</strong>?
+        </p>
+
+        <div class="alert alert-warning">
+          <ul class="mb-0 ps-3">
+            <li>Student ID: <strong>{{ student.student_id }}</strong></li>
+            {% if student.class_room %}
+              <li>Class: <strong>{{ student.class_room.name }}</strong></li>
+            {% endif %}
+            <li>All stored facial embedding templates will be <strong>permanently deleted</strong>.</li>
+            <li>The student will no longer be eligible for facial recognition check-in.</li>
+            <li>Consent timestamp and reference will be cleared.</li>
+          </ul>
+        </div>
+
+        <form method="post" action="{% url 'students:revoke' student.student_id %}">
+          {% csrf_token %}
+          <div class="d-flex justify-content-between mt-4">
+            <a href="{% url 'students:enroll' student.student_id %}" class="btn btn-secondary">
+              Cancel
+            </a>
+            <button type="submit" class="btn btn-danger">
+              Yes, Revoke Consent &amp; Delete Templates
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

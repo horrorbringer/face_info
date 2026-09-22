@@ -36,32 +36,92 @@ def import_students(request):
 @login_required
 @permission_required("students.change_student", raise_exception=True)
 def enroll(request, student_id):
+    from attendance.models import StudentFace
     student = get_object_or_404(Student, student_id=student_id)
     form = EnrollmentForm(request.POST or None, request.FILES or None)
+
     if request.method == "POST" and form.is_valid():
-        try:
-            vector, model_name = embedding_from_upload(form.cleaned_data["image"])
-        except FaceRecognitionUnavailable as exc:
-            form.add_error("image", str(exc))
+        # Retrieve all uploaded images from either 'images' (multi-angle or webcam snapshots) or 'image'
+        images = request.FILES.getlist("images")
+        if not images:
+            single = request.FILES.get("image") or form.cleaned_data.get("image")
+            if single:
+                images = [single]
+
+        if not images:
+            form.add_error("image", "Please provide at least one face photo via camera capture or file upload.")
         else:
-            student.consent_given_at = timezone.now()
-            student.consent_reference = form.cleaned_data["consent_reference"]
-            student.save(update_fields=["consent_given_at", "consent_reference", "updated_at"])
-            FaceEmbedding.objects.update_or_create(student=student, defaults={"vector": vector, "model_name": model_name})
-            messages.success(request, "Enrollment complete. The uploaded image was discarded.")
-            return redirect("students:manual_lookup")
-    return render(request, "students/enroll.html", {"form": form, "student": student})
+            enrolled_count = 0
+            errors = []
+            primary_vector = None
+            primary_model = None
+
+            for idx, img in enumerate(images):
+                try:
+                    vector, model_name = embedding_from_upload(img)
+                    StudentFace.objects.create(student=student, embedding=vector)
+                    if primary_vector is None:
+                        primary_vector = vector
+                        primary_model = model_name
+                    enrolled_count += 1
+                except FaceRecognitionUnavailable as exc:
+                    errors.append(f"Photo {idx + 1}: {str(exc)}")
+                except Exception as exc:
+                    errors.append(f"Photo {idx + 1}: {str(exc)}")
+
+            if enrolled_count > 0:
+                student.consent_given_at = timezone.now()
+                student.consent_reference = form.cleaned_data["consent_reference"]
+                student.save(update_fields=["consent_given_at", "consent_reference", "updated_at"])
+
+                # Keep FaceEmbedding in sync for kiosk / pilot search
+                FaceEmbedding.objects.update_or_create(
+                    student=student,
+                    defaults={"vector": primary_vector, "model_name": primary_model or "approved-onnx-model"},
+                )
+
+                if errors:
+                    messages.warning(
+                        request,
+                        f"Enrolled {enrolled_count} face template(s) with warnings: {'; '.join(errors)}"
+                    )
+                else:
+                    messages.success(
+                        request,
+                        f"Enrollment complete. Successfully saved {enrolled_count} biometric template(s)."
+                    )
+                return redirect("students:manual_lookup")
+            else:
+                for err in errors:
+                    form.add_error(None, err)
+
+    # Compute template stats for the student profile card
+    templates_count = student.face_embeddings.count()
+    has_legacy = hasattr(student, "face_embedding")
+    total_templates = max(templates_count, 1 if has_legacy else 0)
+    is_enrolled = total_templates > 0 and student.consent_given_at is not None
+
+    context = {
+        "form": form,
+        "student": student,
+        "is_enrolled": is_enrolled,
+        "total_templates": total_templates,
+    }
+    return render(request, "students/enroll.html", context)
 
 
 @login_required
 @permission_required("students.change_student", raise_exception=True)
 def revoke(request, student_id):
+    from attendance.models import StudentFace
     student = get_object_or_404(Student, student_id=student_id)
     if request.method == "POST":
         FaceEmbedding.objects.filter(student=student).delete()
+        StudentFace.objects.filter(student=student).delete()
         student.consent_given_at = None
         student.consent_reference = ""
         student.save(update_fields=["consent_given_at", "consent_reference", "updated_at"])
-        messages.success(request, "Consent revoked and biometric template deleted.")
-    return redirect("students:manual_lookup")
+        messages.success(request, f"Consent revoked and all biometric templates deleted for {student.full_name}.")
+        return redirect("students:manual_lookup")
+    return render(request, "students/revoke.html", {"student": student})
 

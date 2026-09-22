@@ -38,6 +38,42 @@ class StudentImportForm(forms.Form):
 
 
 class EnrollmentForm(forms.Form):
-    image = forms.ImageField(help_text="A temporary frame; it is processed and discarded.")
-    consent_reference = forms.CharField(max_length=255, help_text="Consent form/reference number")
+    consent_reference = forms.CharField(
+        max_length=255,
+        label="Consent Reference",
+        help_text="Consent form number, signed document ID, or parental record reference.",
+        widget=forms.TextInput(attrs={
+            "class": "form-control",
+            "placeholder": "e.g., CONSENT-2026-001",
+            "id": "id_consent_reference"
+        }),
+    )
+    consent_confirmed = forms.BooleanField(
+        required=True,
+        label="I confirm that verified student / guardian biometric consent is on file.",
+        widget=forms.CheckboxInput(attrs={
+            "class": "form-check-input",
+            "id": "id_consent_confirmed"
+        }),
+    )
+    image = forms.FileField(
+        required=False,
+        label="Face Image",
+        help_text="Upload 1–5 angle photos (JPG, PNG) or capture frames via the live camera.",
+        widget=forms.FileInput(attrs={
+            "class": "form-control",
+            "accept": "image/*",
+            "id": "id_image"
+        }),
+    )
+
+    def clean(self):
+        cleaned_data = super().clean()
+        # Ensure at least one image file is provided either via 'image' or 'images' in request.FILES
+        has_file = bool(cleaned_data.get("image"))
+        if not has_file and self.files:
+            has_file = bool(self.files.getlist("images") or self.files.getlist("image"))
+        if not has_file:
+            self.add_error("image", "Please provide at least one face photo via camera capture or file upload.")
+        return cleaned_data
 
