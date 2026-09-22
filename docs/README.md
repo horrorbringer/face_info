@@ -9,7 +9,7 @@ Welcome to the central documentation index for the Smart Attendance System. This
 | Role | Team Member | Primary Documentation |
 | :--- | :--- | :--- |
 | **Backend Developers** | Meas Vanny, Sat Chhumseak | [Architecture & Logic Guide](architecture_and_business_logic.md), [API Reference](api_reference.md) |
-| **Mobile Developer (Flutter)** | Nov Thearith | [API Reference](api_reference.md), [System Capabilities](system_capabilities.md) |
+| **Mobile Developer (Flutter)** | Nov Thearith | [Mobile API Guide](mobile_api_guide.md), [API Reference](api_reference.md) |
 | **UI/UX Designer** | Chhom Rosvisal | [System Capabilities](system_capabilities.md), [Product Specification](smart_attendance_system_spec.md) |
 | **Marketing & QA Testing** | Sem Sreyneat | [Testing & QA Guide](testing_guide.md), [System Capabilities](system_capabilities.md) |
 
@@ -31,11 +31,13 @@ Welcome to the central documentation index for the Smart Attendance System. This
 - Sequence flows for QR check-in, Face matching, and asynchronous alert dispatching.
 - Configuration variables and production deployment tips.
 
-### 3. [API Reference & Mobile Integration](api_reference.md)
-> **Summary:** Complete REST API endpoint reference designed for Flutter app integration.
-- Authentication tokens (`Token <key>`).
-- Request schemas, headers, parameters, and sample JSON responses.
-- Error codes and validation handling.
+### 3. [API Reference](api_reference.md) & [Mobile Integration Guide](mobile_api_guide.md)
+> **Summary:** Complete REST API endpoint reference and step-by-step Flutter integration handbook.
+- Mobile authentication lifecycle, token revocation on logout, and role routing.
+- QR scanner integration, live face check-in, and history pagination.
+- Teacher live class roster, roll call, and session scheduling flows.
+- Interactive Swagger UI (`/api/docs/`) and OpenAPI 3.0 schema (`/api/schema/`).
+- HTTP error handling matrix and Dart code generator setup.
 
 ### 4. [Testing & QA Guide](testing_guide.md)
 > **Summary:** Step-by-step procedures for validating new releases.
