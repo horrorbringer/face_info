@@ -1,0 +1,168 @@
+{% extends "base.html" %}
+
+{% block title %}Live QR Code - {{ class_room.name }}{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto py-6 px-4">
+    <!-- Header Card -->
+    <div class="bg-gray-800 border border-gray-700 rounded-2xl p-6 mb-6 shadow-xl flex flex-col md:flex-row items-center justify-between gap-4">
+        <div>
+            <div class="flex items-center gap-3">
+                <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                    <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                    Live Anti-Cheat Session
+                </span>
+                <span class="text-xs text-gray-400">20s Rotation Window</span>
+            </div>
+            <h1 class="text-2xl font-bold text-white mt-2">{{ class_room.name }}</h1>
+            <p class="text-sm text-gray-400">{{ session.date }} &bull; {{ session.start_time|time:"H:i" }} - {{ session.end_time|time:"H:i" }}</p>
+        </div>
+        <div class="flex items-center gap-3">
+            <button id="fullscreenBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-200 text-sm font-medium rounded-xl transition flex items-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-5h-4m4 0v4m0 0l-5-5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"/>
+                </svg>
+                Projector Fullscreen
+            </button>
+            <a href="/teacher/classes/today/" class="px-4 py-2 bg-gray-700/60 hover:bg-gray-700 text-gray-300 text-sm font-medium rounded-xl transition">
+                Back to Classes
+            </a>
+        </div>
+    </div>
+
+    <!-- Main Projector Display -->
+    <div id="projectorBox" class="bg-gradient-to-b from-gray-800 to-gray-900 border border-gray-700 rounded-3xl p-8 shadow-2xl text-center relative overflow-hidden">
+        <!-- Anti-Cheat Security Notice -->
+        <div class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs font-medium mb-6">
+            <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+            </svg>
+            Screenshot-Proof: Tokens auto-expire every 20 seconds. Remote scans will fail.
+        </div>
+
+        <!-- QR Display Canvas Container -->
+        <div class="relative mx-auto flex items-center justify-center p-6 bg-white rounded-3xl shadow-inner w-72 h-72 sm:w-80 sm:h-80">
+            <div id="qrcode" class="flex items-center justify-center"></div>
+        </div>
+
+        <!-- Circular Countdown Ring -->
+        <div class="mt-8 flex flex-col items-center justify-center">
+            <div class="relative w-20 h-20 flex items-center justify-center">
+                <svg class="w-20 h-20 transform -rotate-90">
+                    <circle cx="40" cy="40" r="34" stroke="currentColor" stroke-width="6" class="text-gray-700" fill="transparent"/>
+                    <circle id="countdownRing" cx="40" cy="40" r="34" stroke="currentColor" stroke-width="6" class="text-indigo-500 transition-all duration-1000 ease-linear" stroke-linecap="round" fill="transparent" stroke-dasharray="213.6" stroke-dashoffset="0"/>
+                </svg>
+                <span id="countdownNumber" class="absolute text-xl font-bold text-white">20</span>
+            </div>
+            <p class="text-xs text-gray-400 mt-2 font-mono" id="tokenLabel">Refreshing token...</p>
+        </div>
+
+        <!-- Instructions for Students -->
+        <div class="mt-8 pt-6 border-t border-gray-700/60 grid grid-cols-1 sm:grid-cols-3 gap-4 text-left text-xs text-gray-400">
+            <div class="flex items-start gap-2">
+                <span class="w-5 h-5 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-bold">1</span>
+                <span>Open your Student Portal scanner on your phone.</span>
+            </div>
+            <div class="flex items-start gap-2">
+                <span class="w-5 h-5 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-bold">2</span>
+                <span>Aim camera directly at this projector screen.</span>
+            </div>
+            <div class="flex items-start gap-2">
+                <span class="w-5 h-5 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-bold">3</span>
+                <span>Attendance is registered in real-time.</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- QR Code Generator Library -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+(() => {
+    const sessionId = {{ session.id }};
+    const intervalSeconds = {{ interval_seconds|default:20 }};
+    const circumference = 2 * Math.PI * 34; // r=34 -> ~213.6
+
+    const qrcodeContainer = document.getElementById("qrcode");
+    const ring = document.getElementById("countdownRing");
+    const countNum = document.getElementById("countdownNumber");
+    const tokenLabel = document.getElementById("tokenLabel");
+    const fullscreenBtn = document.getElementById("fullscreenBtn");
+    const projectorBox = document.getElementById("projectorBox");
+
+    let qrCodeObj = null;
+    let currentToken = "";
+    let secondsLeft = intervalSeconds;
+
+    function renderQR(text) {
+        if (!qrCodeObj) {
+            qrCodeObj = new QRCode(qrcodeContainer, {
+                text: text,
+                width: 256,
+                height: 256,
+                colorDark: "#0f172a",
+                colorLight: "#ffffff",
+                correctLevel: QRCode.CorrectLevel.M
+            });
+        } else {
+            qrCodeObj.clear();
+            qrCodeObj.makeCode(text);
+        }
+    }
+
+    async function fetchDynamicQR() {
+        try {
+            const resp = await fetch(`/api/teacher/sessions/${sessionId}/qr/dynamic/`, {
+                headers: { "Accept": "application/json" }
+            });
+            if (!resp.ok) return;
+            const data = await resp.json();
+            currentToken = data.token;
+            secondsLeft = data.expires_in_seconds;
+            renderQR(currentToken);
+            tokenLabel.textContent = `Token: ${currentToken.substring(0, 14)}...`;
+            updateTimerVisuals();
+        } catch (err) {
+            console.error("Failed to load dynamic QR token", err);
+        }
+    }
+
+    function updateTimerVisuals() {
+        countNum.textContent = secondsLeft;
+        const progress = secondsLeft / intervalSeconds;
+        const offset = circumference * (1 - progress);
+        ring.style.strokeDashoffset = offset;
+
+        if (secondsLeft <= 5) {
+            ring.classList.remove("text-indigo-500");
+            ring.classList.add("text-rose-500");
+        } else {
+            ring.classList.remove("text-rose-500");
+            ring.classList.add("text-indigo-500");
+        }
+    }
+
+    // Interval tick every second
+    setInterval(() => {
+        secondsLeft--;
+        if (secondsLeft <= 0) {
+            fetchDynamicQR();
+        } else {
+            updateTimerVisuals();
+        }
+    }, 1000);
+
+    // Initial load
+    fetchDynamicQR();
+
+    // Fullscreen toggle
+    fullscreenBtn.addEventListener("click", () => {
+        if (!document.fullscreenElement) {
+            projectorBox.requestFullscreen().catch(err => alert(err.message));
+        } else {
+            document.exitFullscreen();
+        }
+    });
+})();
+</script>
+{% endblock %}

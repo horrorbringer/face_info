@@ -14,6 +14,11 @@ from rest_framework.views import APIView
 
 from students.models import Student
 from .models import AttendanceRecord, ClassRoom, Session, StudentFace, Teacher
+from .security import (
+    get_dynamic_qr_info,
+    is_client_ip_allowed,
+    verify_dynamic_qr_token,
+)
 from .serializers import (
     AttendanceOverrideSerializer,
     AttendanceRecordSerializer,
@@ -98,10 +103,18 @@ class QRCheckInView(APIView):
     POST /api/attendance/checkin/qr/
     Body: { "qr_token": "..." }
     Validates token, checks expiry, and records student attendance as present or late.
+    Supports both dynamic rotating tokens (dyn_<id>_<hash>) and standard tokens.
     """
     permission_classes = [permissions.IsAuthenticated]
+    throttle_scope = "attendance_checkin"
 
     def post(self, request):
+        if not is_client_ip_allowed(request):
+            return Response(
+                {"error": "Attendance check-in is restricted to the authorized campus network."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         serializer = QRCheckInSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         qr_token = serializer.validated_data["qr_token"].strip()
@@ -110,18 +123,34 @@ class QRCheckInView(APIView):
             return Response({"error": "Only registered students can check in via QR code."}, status=status.HTTP_403_FORBIDDEN)
         student = request.user.student_profile
 
-        try:
-            session = Session.objects.select_related("class_room").get(qr_token=qr_token)
-        except Session.DoesNotExist:
-            return Response({"error": "Invalid QR code."}, status=status.HTTP_400_BAD_REQUEST)
+        session = None
+        if qr_token.startswith("dyn_"):
+            parts = qr_token.split("_")
+            if len(parts) >= 3 and parts[1].isdigit():
+                sess_id = int(parts[1])
+                try:
+                    session = Session.objects.select_related("class_room").get(id=sess_id)
+                except Session.DoesNotExist:
+                    session = None
+
+            if not session or not verify_dynamic_qr_token(session.id, qr_token):
+                return Response(
+                    {"error": "Dynamic QR code has expired or is invalid. Please scan the current code on screen."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        else:
+            try:
+                session = Session.objects.select_related("class_room").get(qr_token=qr_token)
+            except Session.DoesNotExist:
+                return Response({"error": "Invalid QR code."}, status=status.HTTP_400_BAD_REQUEST)
+
+            now = timezone.now()
+            if not session.qr_token_expires_at or now > session.qr_token_expires_at:
+                return Response({"error": "QR code has expired. Ask your teacher for a refreshed code."}, status=status.HTTP_400_BAD_REQUEST)
 
         now = timezone.now()
-
         if session.ended_at:
             return Response({"error": "This session has already ended."}, status=status.HTTP_400_BAD_REQUEST)
-
-        if not session.qr_token_expires_at or now > session.qr_token_expires_at:
-            return Response({"error": "QR code has expired. Ask your teacher for a refreshed code."}, status=status.HTTP_400_BAD_REQUEST)
 
         # Enforce student enrollment in this session's class (if class_room set)
         if student.class_room and student.class_room_id != session.class_room_id:
@@ -226,6 +255,55 @@ class SessionRotateQRView(APIView):
             "qr_token_expires_at": session.qr_token_expires_at,
             "expires_in_minutes": expiry_minutes,
         })
+
+
+class SessionDynamicQRView(APIView):
+    """
+    GET /api/teacher/sessions/{id}/qr/dynamic/
+    Returns the currently active rotating QR token with remaining countdown seconds.
+    Used by classroom projectors to refresh QR codes every 20 seconds.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, session_id):
+        session = get_object_or_404(Session, id=session_id)
+        if hasattr(request.user, "teacher_profile") and not request.user.is_staff:
+            if session.class_room.teacher != request.user.teacher_profile:
+                return Response({"error": "Not authorized to manage this session."}, status=status.HTTP_403_FORBIDDEN)
+
+        if session.ended_at:
+            return Response({"error": "This session has already ended."}, status=status.HTTP_400_BAD_REQUEST)
+
+        info = get_dynamic_qr_info(session.id)
+        info["class_room"] = session.class_room.name
+        info["date"] = str(session.date)
+        info["start_time"] = str(session.start_time)
+        return Response(info)
+
+
+def session_live_qr(request, session_id):
+    """
+    GET /teacher/sessions/{id}/live-qr/
+    Renders fullscreen teacher projector view with auto-rotating dynamic QR code.
+    """
+    from django.contrib.auth.decorators import login_required
+    from django.shortcuts import render
+
+    if not request.user.is_authenticated:
+        from django.contrib.auth.views import redirect_to_login
+        return redirect_to_login(request.get_full_path())
+
+    session = get_object_or_404(Session, id=session_id)
+    if hasattr(request.user, "teacher_profile") and not request.user.is_staff:
+        if session.class_room.teacher != request.user.teacher_profile:
+            from django.core.exceptions import PermissionDenied
+            raise PermissionDenied("Not authorized to display QR for this session.")
+
+    return render(request, "attendance/live_qr.html", {
+        "session": session,
+        "class_room": session.class_room,
+        "interval_seconds": getattr(settings, "DYNAMIC_QR_INTERVAL_SECONDS", 20),
+    })
 
 
 class SessionEndView(APIView):
@@ -341,13 +419,18 @@ class FaceCheckInView(APIView):
       image: <captured frame>
       session_id: <int, optional but recommended>
 
-    Matches live capture against stored embeddings for students in the session's classroom.
+    Form-data: { "image": <file>, "session_id": <optional_int> }
+    Performs anti-spoofing verification (3D depth, FFT moiré, texture) and matches face embedding.
     """
     permission_classes = [permissions.IsAuthenticated]
+    throttle_scope = "attendance_checkin"
 
     def post(self, request):
-        # NOTE (v1 Known Limitation): No liveness detection / anti-spoofing in v1.
-        # TODO: Implement passive/active liveness detection in v2.
+        if not is_client_ip_allowed(request):
+            return Response(
+                {"error": "Attendance check-in is restricted to the authorized campus network."},
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         image = request.FILES.get("image")
         if not image:
@@ -358,12 +441,16 @@ class FaceCheckInView(APIView):
         if session_id:
             session = get_object_or_404(Session, id=session_id)
 
-        from recognition.services import FaceRecognitionUnavailable, embedding_from_upload
+        from recognition.services import FaceRecognitionUnavailable, process_kiosk_frame
 
         try:
-            target_vector, _ = embedding_from_upload(image)
+            target_vector, _, liveness = process_kiosk_frame(image)
         except FaceRecognitionUnavailable as exc:
-            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            err_str = str(exc)
+            return Response({
+                "error": err_str,
+                "is_spoof": "Spoof" in err_str or "Planar" in err_str or "moiré" in err_str
+            }, status=status.HTTP_400_BAD_REQUEST)
 
         # Narrow search space to students in the session's class (or all active students if no session)
         target = np.asarray(target_vector, dtype=np.float32)
@@ -393,6 +480,7 @@ class FaceCheckInView(APIView):
                 "matched": False,
                 "score": round(best_score, 4),
                 "threshold": threshold,
+                "liveness": liveness,
                 "message": "Face not recognized. Please use QR check-in or request teacher assistance.",
             }, status=status.HTTP_200_OK)
 
@@ -424,6 +512,7 @@ class FaceCheckInView(APIView):
             "student_id": best_student.student_id,
             "student_name": best_student.full_name,
             "confidence_score": round(best_score, 4),
+            "liveness": liveness,
             "attendance": attendance_info,
         }, status=status.HTTP_200_OK)
 

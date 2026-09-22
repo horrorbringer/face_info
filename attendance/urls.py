@@ -17,6 +17,8 @@ urlpatterns = [
     # Teacher Endpoints
     path("teacher/classes/today/", views.TeacherTodayClassesView.as_view(), name="teacher-classes-today"),
     path("teacher/sessions/<int:session_id>/qr/", views.SessionRotateQRView.as_view(), name="teacher-session-qr"),
+    path("teacher/sessions/<int:session_id>/qr/dynamic/", views.SessionDynamicQRView.as_view(), name="teacher-session-qr-dynamic"),
+    path("teacher/sessions/<int:session_id>/live-qr/", views.session_live_qr, name="teacher-session-live-qr"),
     path("teacher/sessions/<int:session_id>/end/", views.SessionEndView.as_view(), name="teacher-session-end"),
     path("teacher/attendance/<int:record_id>/", views.AttendanceOverrideView.as_view(), name="teacher-attendance-override"),
 

@@ -4,14 +4,22 @@
 <div class="row justify-content-center">
   <div class="col-lg-8 col-xl-7">
     <!-- Header -->
-    <div class="d-flex justify-content-between align-items-center mb-3">
+    <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
       <div>
         <h1 class="h3 mb-1">Face Recognition Scanner</h1>
         <p class="text-muted small mb-0">Hands-free automatic identity verification with real-time anti-spoofing detection.</p>
       </div>
-      <div class="form-check form-switch fs-6">
-        <input class="form-check-input" type="checkbox" role="switch" id="auto-scan-toggle" checked>
-        <label class="form-check-label fw-semibold" for="auto-scan-toggle">Auto-Scan</label>
+      <div class="d-flex align-items-center gap-3">
+        <div class="form-check form-switch fs-6 mb-0">
+          <input class="form-check-input" type="checkbox" role="switch" id="challenge-toggle">
+          <label class="form-check-label fw-semibold text-primary" for="challenge-toggle" title="Requires user to blink or move head to defeat video replays">
+            Active Challenge
+          </label>
+        </div>
+        <div class="form-check form-switch fs-6 mb-0">
+          <input class="form-check-input" type="checkbox" role="switch" id="auto-scan-toggle" checked>
+          <label class="form-check-label fw-semibold" for="auto-scan-toggle">Auto-Scan</label>
+        </div>
       </div>
     </div>
 
@@ -51,6 +59,14 @@
           <h2 class="h5">Camera Access Required</h2>
           <p class="small text-white-50 mb-3">Please grant camera permissions in your browser or access via HTTPS / localhost.</p>
           <button type="button" id="retry-camera" class="btn btn-sm btn-light">Retry Camera</button>
+        </div>
+
+        <!-- Interactive Active Challenge Prompt -->
+        <div id="challenge-prompt" class="position-absolute bottom-0 start-50 translate-middle-x mb-4 d-none" style="z-index: 10;">
+          <div class="badge bg-primary px-3 py-2 fs-6 shadow-lg rounded-pill border border-white border-opacity-25 d-flex align-items-center gap-2">
+            <span id="challenge-icon" class="fs-5">😉</span>
+            <span id="challenge-text">Active Challenge: Blink your eyes</span>
+          </div>
         </div>
 
         <!-- SUCCESS OVERLAY (Automated Match) -->
@@ -129,11 +145,49 @@
   const spoofOverlay = document.getElementById('spoof-overlay');
   const spoofMsg = document.getElementById('spoof-msg');
   const csrfToken = document.querySelector('#csrf-form [name=csrfmiddlewaretoken]').value;
+  const challengeToggle = document.getElementById('challenge-toggle');
+  const challengePrompt = document.getElementById('challenge-prompt');
+  const challengeIcon = document.getElementById('challenge-icon');
+  const challengeText = document.getElementById('challenge-text');
 
   let stream = null;
   let isScanning = false;
   let autoScanInterval = null;
   let resetTimer = null;
+
+  // Active Challenge state
+  let activeChallenge = 'blink'; // 'blink' or 'turn'
+  let challengeBlinkSeen = false;
+  let challengeTurnBaseYaw = null;
+  let challengeCompleted = false;
+
+  if (challengeToggle) {
+    challengeToggle.addEventListener('change', () => {
+      if (challengeToggle.checked) {
+        challengePrompt.classList.remove('d-none');
+        resetChallenge();
+      } else {
+        challengePrompt.classList.add('d-none');
+        challengeCompleted = true;
+      }
+    });
+  }
+
+  function resetChallenge() {
+    activeChallenge = Math.random() > 0.5 ? 'blink' : 'turn';
+    challengeBlinkSeen = false;
+    challengeTurnBaseYaw = null;
+    challengeCompleted = false;
+    if (challengePrompt) {
+      if (activeChallenge === 'blink') {
+        challengeIcon.textContent = '😉';
+        challengeText.textContent = 'Active Challenge: Blink your eyes';
+      } else {
+        challengeIcon.textContent = '↔️';
+        challengeText.textContent = 'Active Challenge: Turn head slightly';
+      }
+    }
+  }
 
   // Web Audio chime feedback
   function playAudioFeedback(type) {
@@ -239,9 +293,39 @@
         reticle.style.borderColor = 'white';
 
         if (data.status === 'matched') {
+          // If Active Challenge is enabled, require interactive movement
+          if (challengeToggle && challengeToggle.checked && !challengeCompleted) {
+            const metrics = (data.liveness && data.liveness.metrics) || {};
+            if (activeChallenge === 'blink') {
+              if (metrics.is_blinking) {
+                challengeBlinkSeen = true;
+                challengeIcon.textContent = '👀';
+                challengeText.textContent = 'Blink registered! Open eyes to finish...';
+              } else if (challengeBlinkSeen && !metrics.is_blinking) {
+                challengeCompleted = true;
+              }
+            } else if (activeChallenge === 'turn') {
+              const yaw = metrics.yaw_ratio || 1.0;
+              if (challengeTurnBaseYaw === null) {
+                challengeTurnBaseYaw = yaw;
+                challengeText.textContent = 'Turn head slightly sideways...';
+              } else if (Math.abs(yaw - challengeTurnBaseYaw) >= 0.20) {
+                challengeCompleted = true;
+              }
+            }
+
+            if (!challengeCompleted) {
+              statusBadge.className = 'badge bg-info text-dark px-3 py-2 shadow-sm fs-6';
+              statusBadge.textContent = '⏳ Complete active challenge...';
+              setTimeout(() => { isScanning = false; }, 350);
+              return;
+            }
+          }
+
           // SUCCESS: Real Face & Matched Student
           playAudioFeedback('success');
           showMatchSuccess(data);
+          resetChallenge();
         } else if (data.status === 'spoof') {
           // SPOOF: Screen or Paper Photo Detected
           playAudioFeedback('spoof');

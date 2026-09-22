@@ -49,6 +49,11 @@ MATCH_THRESHOLD = float(os.getenv("MATCH_THRESHOLD", "0.5"))
 LATE_THRESHOLD_MINUTES = int(os.getenv("LATE_THRESHOLD_MINUTES", "15"))
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
+# Anti-Cheat & Security Settings
+DYNAMIC_QR_INTERVAL_SECONDS = int(os.getenv("DYNAMIC_QR_INTERVAL_SECONDS", "20"))
+raw_subnets = os.getenv("ATTENDANCE_ALLOWED_SUBNETS", "")
+ATTENDANCE_ALLOWED_SUBNETS = [s.strip() for s in raw_subnets.split(",") if s.strip()]
+
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework.authentication.TokenAuthentication",
@@ -57,6 +62,16 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
     ],
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+        "rest_framework.throttling.ScopedRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": "60/minute",
+        "user": "120/minute",
+        "attendance_checkin": "20/minute",
+    },
 }
 
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")

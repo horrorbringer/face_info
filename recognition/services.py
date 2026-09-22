@@ -87,7 +87,11 @@ def check_liveness(image, face):
     score = 1.0
     reasons = []
 
-    # 1. 3D Landmark Depth Variance
+    # 1. 3D Landmark Depth Variance & Pose / Eye metrics
+    depth_ratio = 0.0
+    ear = 0.30
+    yaw_ratio = 1.0
+
     lm3d = face.get("landmark_3d_68")
     if lm3d is not None and len(lm3d) == 68:
         pts = np.asarray(lm3d, dtype=np.float32)
@@ -99,6 +103,33 @@ def check_liveness(image, face):
         if depth_ratio < 0.055:
             score -= 0.40
             reasons.append("Planar 2D surface detected (flat photo/screen)")
+
+        # Compute Eye Aspect Ratio (EAR) for blink detection
+        try:
+            # Right eye: 36-41
+            r_v1 = np.linalg.norm(pts[37, :2] - pts[41, :2])
+            r_v2 = np.linalg.norm(pts[38, :2] - pts[40, :2])
+            r_h = np.linalg.norm(pts[36, :2] - pts[39, :2])
+            r_ear = (r_v1 + r_v2) / max(1e-5, (2.0 * r_h))
+
+            # Left eye: 42-47
+            l_v1 = np.linalg.norm(pts[43, :2] - pts[47, :2])
+            l_v2 = np.linalg.norm(pts[44, :2] - pts[46, :2])
+            l_h = np.linalg.norm(pts[42, :2] - pts[45, :2])
+            l_ear = (l_v1 + l_v2) / max(1e-5, (2.0 * l_h))
+
+            ear = round(float((r_ear + l_ear) / 2.0), 3)
+        except Exception:
+            ear = 0.28
+
+        # Compute Head Yaw Ratio (Nose horizontal position relative to jaw contour 0 & 16)
+        try:
+            nose_x = pts[30, 0]
+            d_left = max(1.0, float(nose_x - pts[0, 0]))
+            d_right = max(1.0, float(pts[16, 0] - nose_x))
+            yaw_ratio = round(float(d_left / d_right), 3)
+        except Exception:
+            yaw_ratio = 1.0
 
     # 2. Extract and analyze face crop
     x1, y1, x2, y2 = [int(v) for v in face.bbox]
@@ -142,7 +173,13 @@ def check_liveness(image, face):
     score = max(0.0, min(1.0, score))
     is_real = score >= 0.50
     details = ", ".join(reasons) if reasons else "Real 3D face verified"
-    return is_real, round(score, 3), details
+    metrics = {
+        "depth_ratio": round(float(depth_ratio), 4),
+        "ear": ear,
+        "yaw_ratio": yaw_ratio,
+        "is_blinking": ear < 0.20,
+    }
+    return is_real, round(score, 3), details, metrics
 
 
 def process_kiosk_frame(upload):
@@ -183,11 +220,12 @@ def process_kiosk_frame(upload):
     primary_face = faces[0]
 
     # Verify real vs fake (anti-spoofing)
-    is_real, liveness_score, reason = check_liveness(image, primary_face)
+    is_real, liveness_score, reason, metrics = check_liveness(image, primary_face)
     liveness_info = {
         "is_real": is_real,
         "score": liveness_score,
         "details": reason,
+        "metrics": metrics,
     }
 
     if not is_real:

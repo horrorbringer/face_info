@@ -148,9 +148,9 @@ class SmartAttendanceTests(TestCase):
 
         self.client.force_authenticate(user=self.teacher_user)
 
-        with patch("recognition.services.embedding_from_upload") as mock_embed:
-            # Mock image upload matching dummy_vector
-            mock_embed.return_value = (dummy_vector, "approved-onnx-model")
+        with patch("recognition.services.process_kiosk_frame") as mock_frame:
+            # Mock frame liveness and embedding matching dummy_vector
+            mock_frame.return_value = (dummy_vector, "approved-onnx-model", {"is_real": True, "score": 0.98, "details": "Real face verified", "metrics": {}})
 
             from django.core.files.uploadedfile import SimpleUploadedFile
             fake_img = SimpleUploadedFile("face.jpg", b"fake image bytes", content_type="image/jpeg")
@@ -171,8 +171,8 @@ class SmartAttendanceTests(TestCase):
 
         self.client.force_authenticate(user=self.teacher_user)
 
-        with patch("recognition.services.embedding_from_upload") as mock_embed:
-            mock_embed.return_value = (diff_vector, "approved-onnx-model")
+        with patch("recognition.services.process_kiosk_frame") as mock_frame:
+            mock_frame.return_value = (diff_vector, "approved-onnx-model", {"is_real": True, "score": 0.95, "details": "Real face verified", "metrics": {}})
             from django.core.files.uploadedfile import SimpleUploadedFile
             fake_img = SimpleUploadedFile("face.jpg", b"fake image bytes", content_type="image/jpeg")
 
@@ -184,6 +184,62 @@ class SmartAttendanceTests(TestCase):
             self.assertEqual(resp.status_code, status.HTTP_200_OK)
             self.assertFalse(resp.data["matched"])
             self.assertIn("not recognized", resp.data["message"])
+
+    def test_face_checkin_spoof_rejection(self):
+        from recognition.services import FaceRecognitionUnavailable
+        self.client.force_authenticate(user=self.teacher_user)
+
+        with patch("recognition.services.process_kiosk_frame") as mock_frame:
+            mock_frame.side_effect = FaceRecognitionUnavailable("Spoof detected: Planar 2D surface detected (flat photo/screen).")
+            from django.core.files.uploadedfile import SimpleUploadedFile
+            fake_img = SimpleUploadedFile("photo_attack.jpg", b"fake flat photo bytes", content_type="image/jpeg")
+
+            resp = self.client.post(
+                "/api/attendance/checkin/face/",
+                {"image": fake_img, "session_id": self.session.id},
+                format="multipart"
+            )
+            self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+            self.assertTrue(resp.data.get("is_spoof"))
+            self.assertIn("Spoof detected", resp.data.get("error", ""))
+
+    def test_dynamic_qr_checkin_and_expiry(self):
+        from attendance.security import generate_dynamic_qr_token
+        self.client.force_authenticate(user=self.student_user)
+
+        # 1. Valid current window dynamic token
+        valid_dynamic_token = generate_dynamic_qr_token(self.session.id, window_offset=0)
+        resp = self.client.post("/api/attendance/checkin/qr/", {"qr_token": valid_dynamic_token})
+        self.assertIn(resp.status_code, [status.HTTP_200_OK, status.HTTP_201_CREATED])
+
+        # 2. Expired dynamic token (window offset -5)
+        expired_dynamic_token = generate_dynamic_qr_token(self.session.id, window_offset=-5)
+        bad_resp = self.client.post("/api/attendance/checkin/qr/", {"qr_token": expired_dynamic_token})
+        self.assertEqual(bad_resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Dynamic QR code has expired", bad_resp.data.get("error", ""))
+
+    def test_campus_subnet_restriction(self):
+        self.client.force_authenticate(user=self.student_user)
+        valid_token = "valid_qr_test_token"
+
+        # Restrict allowed subnets to 10.0.0.0/8
+        with self.settings(ATTENDANCE_ALLOWED_SUBNETS=["10.0.0.0/8"]):
+            # Request from home IP 203.0.113.19 should be blocked
+            resp = self.client.post(
+                "/api/attendance/checkin/qr/",
+                {"qr_token": valid_token},
+                REMOTE_ADDR="203.0.113.19"
+            )
+            self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+            self.assertIn("restricted to the authorized campus network", resp.data.get("error", ""))
+
+            # Request from campus Wi-Fi 10.5.12.33 should be permitted
+            resp_allowed = self.client.post(
+                "/api/attendance/checkin/qr/",
+                {"qr_token": valid_token},
+                REMOTE_ADDR="10.5.12.33"
+            )
+            self.assertIn(resp_allowed.status_code, [status.HTTP_200_OK, status.HTTP_201_CREATED])
 
     # ------------------------------------------------------------------
     # Phase 5 & 6: Reports, Overrides, and Audits
