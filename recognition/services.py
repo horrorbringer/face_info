@@ -18,8 +18,10 @@ def _app():
         from insightface.app import FaceAnalysis
     except ImportError as exc:
         raise FaceRecognitionUnavailable("Install the approved recognition provider dependencies before enabling scans.") from exc
-    # FACE_MODEL_PATH must point to the model-pack directory, e.g. /models/approved_pack.
-    app = FaceAnalysis(name=os.path.basename(settings.FACE_MODEL_PATH), root=os.path.dirname(settings.FACE_MODEL_PATH), providers=["CPUExecutionProvider"])
+    # Pass path directly if isdir so FaceAnalysis finds onnx files directly without prepending /models/
+    model_name = settings.FACE_MODEL_PATH if os.path.isdir(settings.FACE_MODEL_PATH) else os.path.basename(settings.FACE_MODEL_PATH)
+    root_dir = os.path.dirname(settings.FACE_MODEL_PATH)
+    app = FaceAnalysis(name=model_name, root=root_dir, providers=["CPUExecutionProvider"])
     app.prepare(ctx_id=-1, det_size=(640, 640))
     return app
 

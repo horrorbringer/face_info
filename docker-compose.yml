@@ -21,6 +21,8 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/0
     ports:
       - "8000:8000"
+    volumes:
+      - ${FACE_MODEL_PATH:-./staticfiles}:${FACE_MODEL_PATH:-/tmp/nomodel}:ro
     depends_on:
       - db
       - redis
@@ -33,6 +35,8 @@ services:
       DATABASE_URL: postgresql://faceinfo:change-me@db:5432/faceinfo
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
+    volumes:
+      - ${FACE_MODEL_PATH:-./staticfiles}:${FACE_MODEL_PATH:-/tmp/nomodel}:ro
     depends_on:
       - db
       - redis
