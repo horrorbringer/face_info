@@ -21,7 +21,7 @@ Welcome to the central documentation index for the Smart Attendance System. This
 > **Summary:** The feature index of what the platform can currently do.
 - Supported attendance check-in methods (QR code, Face matching, manual override).
 - Automated Telegram & Email absence notification flows.
-- Multi-angle biometric face enrollment.
+- Multi-angle biometric face enrollment (REST API & Staff Web Camera Studio).
 - Teacher scheduling and class analytics.
 
 ### 2. [Architecture & Business Logic Guide](architecture_and_business_logic.md)
@@ -39,12 +39,15 @@ Welcome to the central documentation index for the Smart Attendance System. This
 
 ### 4. [Testing & QA Guide](testing_guide.md)
 > **Summary:** Step-by-step procedures for validating new releases.
-- Running automated test suites.
-- Manual test checklist for QR check-in and dynamic expiry.
+- Running automated test suites (19 test cases).
+- Manual test checklist for QR check-in, dynamic expiry, and biometric enrollment.
 - Testing Celery background tasks and simulated Telegram alerts.
 - Audit trail verification.
 
-### 5. [Original Product Specification](smart_attendance_system_spec.md)
+### 5. [Production Deployment Guide (From Setup 0)](deployment_guide.md)
+> **Summary:** Complete production deployment manual from server provisioning, firewall, Docker, Nginx, Let's Encrypt SSL, to automated backups.
+
+### 6. [Original Product Specification](smart_attendance_system_spec.md)
 > **Summary:** The project's requirements, scope boundaries, and development phases.
 
 ---
@@ -65,6 +68,9 @@ docker compose exec web python manage.py createsuperuser
 
 # 4. View logs
 docker compose logs -f web celery
+
+# 5. Update running containers after code/template edits
+docker compose up -d --build
 ```
 
 ### Local Python Setup (Lightweight SQLite for quick backend testing)

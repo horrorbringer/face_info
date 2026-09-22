@@ -104,9 +104,10 @@ erDiagram
    - `is_deleted`: Soft-delete flag (records are never permanently purged).
    - `edited_by`: FK to `User` tracking who made a manual status adjustment.
 
-7. **`StudentFace`**:
-   - Stores normalized 512-dimensional embedding vectors (`JSONField`).
-   - Supports 3–5 multi-angle templates per student for higher recognition recall.
+7. **`StudentFace` & `FaceEmbedding` (Biometric Models)**:
+   - **`StudentFace` (`attendance.models`)**: Stores normalized 512-dimensional embedding vectors (`JSONField`) linked via `ForeignKey`. Supports 1 to 5 multi-angle templates per student, utilized by `POST /api/attendance/checkin/face/` for high-recall class check-in.
+   - **`FaceEmbedding` (`students.models`)**: Stores the primary vector template (`OneToOneField`) used by the staff lookup kiosk.
+   - **Automatic Synchronization**: Both the web enrollment view and revocation actions keep these models in sync, ensuring complete data consistency across both kiosk lookups and attendance sessions.
 
 8. **`AlertLog`**:
    - Audit trail for absence notifications.
@@ -259,6 +260,17 @@ erDiagram
 | `PATCH`| `/api/teacher/attendance/{id}/` | Teacher | Manually updates attendance status and logs `edited_by` |
 | `GET` | `/api/reports/class/{id}/` | Staff / Teacher | Aggregated class metrics: present/late/absent rates & counts |
 | `GET` | `/api/reports/student/{id}/` | Staff / Teacher | Aggregated student metrics: individual attendance percentage |
+
+### Staff Web Application Routes
+
+| Method | Path | Auth / Permission | Description |
+| :--- | :--- | :--- | :--- |
+| `GET/POST` | `/` | Login Required | Staff Face Lookup Kiosk (camera capture & candidate confirmation) |
+| `GET` | `/students/` | Login Required | Manual Student Lookup by name, ID, or class year |
+| `GET/POST` | `/students/<student_id>/enroll/` | `students.change_student` | Biometric Face Enrollment Studio (Webcam multi-angle / File upload) |
+| `GET/POST` | `/students/<student_id>/revoke/` | `students.change_student` | Biometric consent revocation & permanent template deletion |
+| `GET/POST` | `/students/import/` | `students.change_student` | Bulk student roster CSV import |
+| `GET/POST` | `/admin/` | Staff / Superuser | Django administrative portal |
 
 ---
 

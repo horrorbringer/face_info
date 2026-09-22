@@ -13,6 +13,7 @@ A consent-first, staff-operated student face lookup pilot. It is **not** attenda
 
 - **[System Capabilities](docs/system_capabilities.md)**: Feature list, check-in methods, background notification workflows, and client integrations.
 - **[Architecture & Business Logic Guide](docs/architecture_and_business_logic.md)**: System diagrams, data entity models, end-to-end flows (QR, Face, Absence alerts), API endpoints table, and configurations.
+- **[Production Deployment Guide](docs/deployment_guide.md)**: Step-by-step setup from scratch on Ubuntu, Docker, Nginx, Let's Encrypt SSL, and daily backup automation.
 - **[System Specification](docs/smart_attendance_system_spec.md)**: Detailed phase requirements and product scope.
 
 
@@ -61,6 +62,7 @@ When `DATABASE_URL` is omitted, Django defaults to a local SQLite database (`db.
    - **Admin portal:** [http://127.0.0.1:8000/admin/](http://127.0.0.1:8000/admin/) (log in to create staff users and manage students)
    - **Face Scanner / Kiosk:** [http://127.0.0.1:8000/](http://127.0.0.1:8000/)
    - **Manual Student Lookup:** [http://127.0.0.1:8000/students/](http://127.0.0.1:8000/students/)
+   - **Student Face Enrollment Studio:** `http://127.0.0.1:8000/students/<student_id>/enroll/` (camera capture / multi-angle photo upload)
 
 ---
 
@@ -74,7 +76,7 @@ When `DATABASE_URL` is omitted, Django defaults to a local SQLite database (`db.
 
 2. **Build and start services:**
    ```bash
-   docker compose up --build
+   docker compose up -d --build
    ```
 
 3. **Apply migrations and create a superuser (in a second terminal):**
@@ -84,6 +86,12 @@ When `DATABASE_URL` is omitted, Django defaults to a local SQLite database (`db.
    ```
 
 4. **Access the application:** [http://127.0.0.1:8000/](http://127.0.0.1:8000/)
+
+5. **Apply updates when running in Docker:**
+   Whenever you edit Python code, templates, or static assets, rebuild and restart the containers in the background with:
+   ```bash
+   docker compose up -d --build
+   ```
 
 ## Important safety and licensing requirements
 

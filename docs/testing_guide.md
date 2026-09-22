@@ -20,10 +20,10 @@ python manage.py test attendance students
 
 **Expected Result:**
 ```text
-Found 13 test(s).
+Found 19 test(s).
 Creating test database for alias 'default'...
-.............
-Ran 13 tests in ~50s
+...................
+Ran 19 tests in ~25s
 OK
 Destroying test database for alias 'default'...
 ```
@@ -46,6 +46,8 @@ Destroying test database for alias 'default'...
 | **TC-10** | Alert Idempotency | End session called twice | Does not duplicate alerts for already-sent students |
 | **TC-11** | Manual Override | Teacher modifies record to "present" | Status updates, `edited_by` recorded, soft-delete works |
 | **TC-12** | Class Report | GET `/api/reports/class/{id}/` | Correctly computes counts and percentages |
+| **TC-13** | Web Biometric Enroll | Open `/students/<id>/enroll/`, capture camera frames or upload photos, submit consent | Saves to both `StudentFace` and `FaceEmbedding`; status shows "Enrolled" |
+| **TC-14** | Biometric Revocation | Click "Revoke Consent" (modal or `/revoke/` URL) and confirm | Clears templates from both `StudentFace` & `FaceEmbedding`, resets consent status |
 
 ---
 

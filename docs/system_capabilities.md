@@ -56,12 +56,24 @@ This document outlines all features, operational capabilities, and services curr
 
 ## 3. Biometric Face Enrollment
 
+Biometric enrollment can be performed via either the REST API (for mobile/external integrations) or the interactive Staff Web Portal.
+
+### A. REST API Endpoint
 - **Endpoint:** `POST /api/face/enroll/`
 - **Payload:** Multipart form data (`images: [<file1>, <file2>, ...]`, optional `student_id`)
 - **Capabilities:**
   - **Multi-Angle Support:** Supports uploading 1 to 5 face photos at different angles for improved recognition accuracy.
   - **Embedding Extraction:** Extracts normalized 512-dimensional facial embeddings using InsightFace and saves them to `StudentFace`.
   - **Consent Logging:** Automatically stamps `consent_given_at = now()`.
+
+### B. Staff Web Portal (`/students/<student_id>/enroll/`)
+- **Web Interface:** Interactive Bootstrap 5 enrollment studio for staff members with `students.change_student` permission.
+- **Capabilities:**
+  - **Live Webcam Studio:** In-browser camera viewfinder with an oval face-positioning guide, angle selector (`Front`, `Slight Left`, `Slight Right`, `Slight Up`), and frame snapshot gallery capturing 1 to 5 biometric angles.
+  - **File Upload Fallback:** File chooser with instant client-side thumbnail previews.
+  - **Dual-Model Synchronization:** Simultaneously saves templates into both `attendance.models.StudentFace` (enabling attendance face check-in) and `students.models.FaceEmbedding` (enabling kiosk cosine matching).
+  - **Consent & Compliance Certification:** Requires entering a consent document reference and checking a mandatory certification box before biometric template generation.
+  - **Safe Revocation:** Displays enrollment status badge (`✓ Enrolled (N templates)` vs `Not Enrolled`). Includes a guarded Bootstrap confirmation modal and standalone confirmation page (`/students/<student_id>/revoke/`) to permanently purge all facial templates from the database.
 
 ---
 
