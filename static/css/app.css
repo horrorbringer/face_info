@@ -1,0 +1,586 @@
+/* ===================================================================
+   Face Info — Design System
+   Premium dark/light design with glassmorphism, gradients, animations
+   =================================================================== */
+
+/* ----------------------------- Tokens ----------------------------- */
+:root {
+  --fi-primary: #4f46e5;
+  --fi-primary-light: #6366f1;
+  --fi-primary-dark: #3730a3;
+  --fi-accent: #7c3aed;
+  --fi-accent-light: #a78bfa;
+  --fi-success: #10b981;
+  --fi-danger: #ef4444;
+  --fi-warning: #f59e0b;
+  --fi-surface: #ffffff;
+  --fi-surface-dim: #f8fafc;
+  --fi-surface-dark: #0f172a;
+  --fi-surface-dark-2: #1e293b;
+  --fi-text: #0f172a;
+  --fi-text-muted: #64748b;
+  --fi-text-on-dark: #f1f5f9;
+  --fi-border: #e2e8f0;
+  --fi-radius: 12px;
+  --fi-radius-lg: 16px;
+  --fi-radius-xl: 24px;
+  --fi-shadow-sm: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+  --fi-shadow: 0 4px 6px -1px rgba(0,0,0,0.07), 0 2px 4px -2px rgba(0,0,0,0.05);
+  --fi-shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.08), 0 4px 6px -4px rgba(0,0,0,0.04);
+  --fi-shadow-glow: 0 0 20px rgba(79,70,229,0.15);
+  --fi-gradient: linear-gradient(135deg, var(--fi-primary), var(--fi-accent));
+  --fi-gradient-soft: linear-gradient(135deg, #eef2ff, #f5f3ff);
+  --fi-transition: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  --fi-font: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+/* ----------------------------- Base ----------------------------- */
+body {
+  font-family: var(--fi-font);
+  background: var(--fi-surface-dim);
+  color: var(--fi-text);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ----------------------------- Navbar ----------------------------- */
+.fi-navbar {
+  background: var(--fi-surface-dark);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+  padding: 0.65rem 0;
+}
+
+.fi-navbar .navbar-brand {
+  font-weight: 700;
+  font-size: 1.15rem;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.fi-navbar .navbar-brand img {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+}
+
+.fi-nav-link {
+  color: rgba(255,255,255,0.7) !important;
+  font-weight: 500;
+  font-size: 0.875rem;
+  padding: 0.4rem 0.75rem !important;
+  border-radius: 8px;
+  transition: var(--fi-transition);
+}
+
+.fi-nav-link:hover, .fi-nav-link.active {
+  color: #fff !important;
+  background: rgba(255,255,255,0.08);
+}
+
+/* ----------------------------- Cards ----------------------------- */
+.fi-card {
+  background: var(--fi-surface);
+  border: 1px solid var(--fi-border);
+  border-radius: var(--fi-radius-lg);
+  box-shadow: var(--fi-shadow);
+  overflow: hidden;
+  transition: var(--fi-transition);
+}
+
+.fi-card:hover {
+  box-shadow: var(--fi-shadow-lg);
+}
+
+.fi-card-header {
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid var(--fi-border);
+  background: var(--fi-surface);
+}
+
+.fi-card-body {
+  padding: 1.5rem;
+}
+
+/* Glassmorphism card variant */
+.fi-glass {
+  background: rgba(255,255,255,0.08);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255,255,255,0.12);
+  color: var(--fi-text-on-dark);
+}
+
+/* ----------------------------- Dark Camera Section ----------------------------- */
+.fi-camera-section {
+  background: var(--fi-surface-dark);
+  border-radius: var(--fi-radius-xl);
+  position: relative;
+  overflow: hidden;
+  min-height: 380px;
+}
+
+.fi-camera-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  max-height: 460px;
+  border-radius: var(--fi-radius-lg);
+}
+
+.fi-camera-reticle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 220px;
+  height: 300px;
+  border: 2px solid rgba(255,255,255,0.6);
+  border-radius: 50%;
+  box-shadow: 0 0 0 9999px rgba(0,0,0,0.4);
+  pointer-events: none;
+  transition: border-color 0.3s ease;
+}
+
+.fi-camera-reticle.detected {
+  border-color: var(--fi-success);
+  box-shadow: 0 0 0 9999px rgba(0,0,0,0.35), 0 0 30px rgba(16,185,129,0.25);
+}
+
+/* ----------------------------- Step Wizard ----------------------------- */
+.fi-steps {
+  display: flex;
+  gap: 0;
+  margin-bottom: 2rem;
+}
+
+.fi-step {
+  flex: 1;
+  text-align: center;
+  position: relative;
+  padding: 0.75rem 0.5rem;
+}
+
+.fi-step::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: -1px;
+  width: calc(100% - 40px);
+  height: 2px;
+  background: var(--fi-border);
+  transform: translateY(-8px);
+  z-index: 0;
+}
+
+.fi-step:last-child::after { display: none; }
+
+.fi-step-number {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--fi-border);
+  color: var(--fi-text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.875rem;
+  position: relative;
+  z-index: 1;
+  transition: var(--fi-transition);
+}
+
+.fi-step.active .fi-step-number {
+  background: var(--fi-gradient);
+  color: #fff;
+  box-shadow: 0 0 0 4px rgba(79,70,229,0.15);
+}
+
+.fi-step.completed .fi-step-number {
+  background: var(--fi-success);
+  color: #fff;
+}
+
+.fi-step.completed::after {
+  background: var(--fi-success);
+}
+
+.fi-step-label {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--fi-text-muted);
+  margin-top: 0.4rem;
+  transition: var(--fi-transition);
+}
+
+.fi-step.active .fi-step-label { color: var(--fi-primary); }
+.fi-step.completed .fi-step-label { color: var(--fi-success); }
+
+/* ----------------------------- Buttons ----------------------------- */
+.fi-btn {
+  font-family: var(--fi-font);
+  font-weight: 600;
+  font-size: 0.875rem;
+  border-radius: 10px;
+  padding: 0.6rem 1.25rem;
+  border: none;
+  transition: var(--fi-transition);
+  cursor: pointer;
+}
+
+.fi-btn-primary {
+  background: var(--fi-gradient);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(79,70,229,0.25);
+}
+
+.fi-btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px rgba(79,70,229,0.35);
+  color: #fff;
+}
+
+.fi-btn-primary:active {
+  transform: translateY(0);
+}
+
+.fi-btn-capture {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: #fff;
+  border: 4px solid rgba(255,255,255,0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: var(--fi-transition);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+
+.fi-btn-capture:hover {
+  transform: scale(1.08);
+}
+
+.fi-btn-capture:active {
+  transform: scale(0.92);
+}
+
+.fi-btn-capture .inner {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--fi-gradient);
+  transition: var(--fi-transition);
+}
+
+.fi-btn-outline {
+  background: transparent;
+  border: 1.5px solid var(--fi-border);
+  color: var(--fi-text);
+}
+
+.fi-btn-outline:hover {
+  border-color: var(--fi-primary);
+  color: var(--fi-primary);
+  background: rgba(79,70,229,0.04);
+}
+
+.fi-btn-danger {
+  background: var(--fi-danger);
+  color: #fff;
+}
+
+/* ----------------------------- Badges ----------------------------- */
+.fi-badge {
+  font-family: var(--fi-font);
+  font-weight: 600;
+  font-size: 0.75rem;
+  padding: 0.3rem 0.65rem;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.fi-badge-success {
+  background: rgba(16,185,129,0.1);
+  color: #059669;
+}
+
+.fi-badge-secondary {
+  background: rgba(100,116,139,0.1);
+  color: var(--fi-text-muted);
+}
+
+.fi-badge-primary {
+  background: rgba(79,70,229,0.1);
+  color: var(--fi-primary);
+}
+
+/* ----------------------------- Thumbnail Gallery ----------------------------- */
+.fi-thumb {
+  position: relative;
+  border-radius: var(--fi-radius);
+  overflow: hidden;
+  aspect-ratio: 3/4;
+  background: var(--fi-surface-dark-2);
+  animation: fi-slide-in 0.3s ease-out;
+}
+
+.fi-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.fi-thumb-label {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 0.25rem 0.4rem;
+  background: linear-gradient(transparent, rgba(0,0,0,0.7));
+  color: #fff;
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-align: center;
+}
+
+.fi-thumb-remove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.5);
+  border: none;
+  color: #fff;
+  font-size: 0.7rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: var(--fi-transition);
+}
+
+.fi-thumb:hover .fi-thumb-remove { opacity: 1; }
+
+@media (max-width: 768px) {
+  .fi-thumb-remove { opacity: 1; }
+}
+
+/* ----------------------------- Student Card ----------------------------- */
+.fi-student-card {
+  background: var(--fi-surface);
+  border: 1px solid var(--fi-border);
+  border-radius: var(--fi-radius-lg);
+  padding: 1rem 1.25rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  transition: var(--fi-transition);
+  text-decoration: none;
+  color: var(--fi-text);
+}
+
+.fi-student-card:hover {
+  box-shadow: var(--fi-shadow-lg);
+  border-color: var(--fi-primary-light);
+  transform: translateY(-2px);
+  color: var(--fi-text);
+}
+
+.fi-student-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: var(--fi-gradient-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 1.1rem;
+  color: var(--fi-primary);
+  flex-shrink: 0;
+}
+
+/* ----------------------------- Search ----------------------------- */
+.fi-search-input {
+  font-family: var(--fi-font);
+  border: 1.5px solid var(--fi-border);
+  border-radius: 10px;
+  padding: 0.65rem 1rem 0.65rem 2.75rem;
+  font-size: 0.9rem;
+  transition: var(--fi-transition);
+  background: var(--fi-surface);
+  width: 100%;
+}
+
+.fi-search-input:focus {
+  outline: none;
+  border-color: var(--fi-primary);
+  box-shadow: 0 0 0 3px rgba(79,70,229,0.1);
+}
+
+.fi-search-icon {
+  position: absolute;
+  left: 0.85rem;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--fi-text-muted);
+  pointer-events: none;
+}
+
+/* ----------------------------- Animations ----------------------------- */
+@keyframes fi-slide-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes fi-flash {
+  0% { opacity: 0; }
+  20% { opacity: 0.9; }
+  100% { opacity: 0; }
+}
+
+@keyframes fi-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes fi-scan {
+  0% { top: 10%; opacity: 0.3; }
+  50% { top: 85%; opacity: 0.8; }
+  100% { top: 10%; opacity: 0.3; }
+}
+
+.fi-flash-overlay {
+  position: absolute;
+  inset: 0;
+  background: #fff;
+  opacity: 0;
+  pointer-events: none;
+  animation: fi-flash 0.4s ease-out;
+  z-index: 20;
+  border-radius: var(--fi-radius-lg);
+}
+
+/* ----------------------------- Step Content Transitions ----------------------------- */
+.fi-step-content {
+  display: none;
+  animation: fi-slide-in 0.3s ease-out;
+}
+
+.fi-step-content.active {
+  display: block;
+}
+
+/* ----------------------------- Mobile ----------------------------- */
+.fi-mobile-nav {
+  display: none;
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: var(--fi-surface);
+  border-top: 1px solid var(--fi-border);
+  padding: 0.4rem 0 calc(0.4rem + env(safe-area-inset-bottom));
+  z-index: 1050;
+  box-shadow: 0 -2px 10px rgba(0,0,0,0.05);
+}
+
+.fi-mobile-nav-inner {
+  display: flex;
+  justify-content: space-around;
+  align-items: center;
+}
+
+.fi-mobile-nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15rem;
+  color: var(--fi-text-muted);
+  text-decoration: none;
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 0.3rem 0.5rem;
+  border-radius: 8px;
+  transition: var(--fi-transition);
+}
+
+.fi-mobile-nav-item:hover, .fi-mobile-nav-item.active {
+  color: var(--fi-primary);
+}
+
+.fi-mobile-nav-item .icon {
+  font-size: 1.25rem;
+}
+
+@media (max-width: 768px) {
+  .fi-mobile-nav { display: block; }
+  body { padding-bottom: 72px; }
+  .fi-navbar .desktop-nav { display: none !important; }
+
+  .fi-steps { gap: 0; }
+  .fi-step::after { display: none; }
+  .fi-step-label { font-size: 0.65rem; }
+
+  .fi-camera-section { min-height: 320px; border-radius: var(--fi-radius); }
+}
+
+/* ----------------------------- Consent Section ----------------------------- */
+.fi-consent-box {
+  background: var(--fi-gradient-soft);
+  border: 1px solid #e0e7ff;
+  border-radius: var(--fi-radius);
+  padding: 1.25rem;
+}
+
+/* ----------------------------- Empty State ----------------------------- */
+.fi-empty {
+  text-align: center;
+  padding: 2.5rem 1rem;
+  color: var(--fi-text-muted);
+}
+
+.fi-empty-icon {
+  font-size: 2.5rem;
+  margin-bottom: 0.75rem;
+  opacity: 0.5;
+}
+
+/* ----------------------------- Progress Ring ----------------------------- */
+.fi-progress-ring {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.fi-progress-dots {
+  display: flex;
+  gap: 6px;
+}
+
+.fi-progress-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--fi-border);
+  transition: var(--fi-transition);
+}
+
+.fi-progress-dot.filled {
+  background: var(--fi-success);
+}
+
+.fi-progress-dot.current {
+  background: var(--fi-primary);
+  box-shadow: 0 0 0 3px rgba(79,70,229,0.2);
+}

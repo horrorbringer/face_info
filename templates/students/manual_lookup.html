@@ -1,2 +1,82 @@
-{% extends "base.html" %}{% block content %}<h1 class="h3">Manual student lookup</h1><form method="get" class="row g-2 mb-4"><div class="col-sm-8">{{ form.query }}</div><div class="col-sm-4"><button class="btn btn-primary">Search</button></div></form>{% if form.is_bound %}<div class="list-group">{% for student in students %}<div class="list-group-item"><strong>{{ student.full_name }}</strong><br><small>{{ student.student_id }} · {{ student.class_year }}</small>{% if perms.students.change_student %}<span class="float-end"><a class="btn btn-sm btn-outline-primary" href="{% url 'students:enroll' student.student_id %}">Enroll</a></span>{% endif %}</div>{% empty %}<p>No active student found.</p>{% endfor %}</div>{% endif %}{% endblock %}
+{% extends "base.html" %}
+{% load static %}
 
+{% block title %}Students — Face Info{% endblock %}
+
+{% block content %}
+<div class="container-fluid px-lg-5" style="max-width: 900px;">
+  <!-- Header -->
+  <div class="d-flex flex-wrap justify-content-between align-items-center mb-4 gap-2">
+    <div>
+      <h1 class="h3 fw-bold mb-1">Students</h1>
+      <p class="text-muted small mb-0">Search, view, and manage student enrollment</p>
+    </div>
+    {% if perms.students.change_student %}
+    <a href="{% url 'students:import' %}" class="fi-btn fi-btn-primary">
+      📥 Import Students
+    </a>
+    {% endif %}
+  </div>
+
+  <!-- Search Bar -->
+  <div class="fi-card mb-4" style="animation: fi-slide-in 0.3s ease-out;">
+    <div class="fi-card-body py-3">
+      <form method="get" autocomplete="off">
+        <div class="position-relative">
+          <span class="fi-search-icon">🔍</span>
+          <input type="text" name="query" value="{{ form.query.value|default:'' }}"
+                 class="fi-search-input"
+                 placeholder="Search by student ID or name..."
+                 autofocus>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Results -->
+  {% if students %}
+    <div class="mb-3">
+      <span class="text-muted small fw-semibold">{{ students|length }} result{{ students|length|pluralize }}</span>
+    </div>
+    <div class="d-flex flex-column gap-2">
+      {% for student in students %}
+        <a href="{% url 'students:enroll' student.student_id %}" class="fi-student-card" style="animation: fi-slide-in {{ forloop.counter|add:"2" }}00ms ease-out;">
+          <div class="fi-student-avatar">
+            {{ student.full_name|truncatechars:1|upper }}
+          </div>
+          <div class="flex-grow-1 min-w-0">
+            <div class="d-flex align-items-center gap-2 flex-wrap">
+              <span class="fw-bold" style="font-size: 0.95rem;">{{ student.full_name }}</span>
+              {% if student.consent_given_at %}
+                <span class="fi-badge fi-badge-success">✓ Enrolled</span>
+              {% else %}
+                <span class="fi-badge fi-badge-secondary">Not Enrolled</span>
+              {% endif %}
+            </div>
+            <div class="text-muted d-flex flex-wrap gap-2" style="font-size: 0.8rem;">
+              <span>{{ student.student_id }}</span>
+              {% if student.class_room %}<span>· {{ student.class_room.name }}</span>{% endif %}
+              {% if student.class_year %}<span>· {{ student.class_year }}</span>{% endif %}
+            </div>
+          </div>
+          <div class="text-muted" style="font-size: 1.1rem;">→</div>
+        </a>
+      {% endfor %}
+    </div>
+
+  {% elif form.is_bound %}
+    <div class="fi-empty">
+      <div class="fi-empty-icon">🔍</div>
+      <h3 class="h6 fw-bold mb-1">No students found</h3>
+      <p class="text-muted small mb-0">Try a different search query or <a href="{% url 'students:import' %}">import students</a> first.</p>
+    </div>
+
+  {% else %}
+    <div class="fi-empty">
+      <div class="fi-empty-icon">👤</div>
+      <h3 class="h6 fw-bold mb-1">Search for students</h3>
+      <p class="text-muted small mb-0">Enter a student ID or name above to find and manage enrollment.</p>
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

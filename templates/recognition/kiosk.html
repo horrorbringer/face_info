@@ -285,7 +285,10 @@
       const ctx = canvas.getContext('2d');
       ctx.drawImage(video, 0, 0);
 
-      // 4. Calculate client-side motion variance in central face crop
+      // 4. Client-side physiological motion + rigid-body analysis
+      // A phone/tablet held in hand moves as a RIGID BODY (uniform motion from hand tremor).
+      // A real face exhibits NON-RIGID physiological motion (varied per-region micro-movement).
+      // We divide the face crop into a 3×2 grid and compare per-region motion patterns.
       const cropW = Math.floor(video.videoWidth * 0.35);
       const cropH = Math.floor(video.videoHeight * 0.45);
       const sx = Math.floor((video.videoWidth - cropW) / 2);
@@ -294,23 +297,60 @@
       const d1 = ctxPrev.getImageData(sx, sy, cropW, cropH).data;
       const d2 = ctx.getImageData(sx, sy, cropW, cropH).data;
 
-      let diffSum = 0;
-      const step = 4 * 4; // Sample every 4th pixel for speed
-      let samples = 0;
-      for (let i = 0; i < d1.length; i += step) {
-        const g1 = (d1[i] + d1[i+1] + d1[i+2]) / 3;
-        const g2 = (d2[i] + d2[i+1] + d2[i+2]) / 3;
-        diffSum += Math.abs(g1 - g2);
-        samples++;
-      }
-      const motionScore = samples > 0 ? (diffSum / samples) : 2.0;
+      // Compute per-region motion across a 3×2 grid
+      const gridRows = 3, gridCols = 2;
+      const cellW = Math.floor(cropW / gridCols);
+      const cellH = Math.floor(cropH / gridRows);
+      const regionDiffs = new Array(gridRows * gridCols).fill(0);
+      const regionCounts = new Array(gridRows * gridCols).fill(0);
 
-      // Rigid static photo or screen held still has no physiological movement (< 0.65)
-      if (motionScore < 0.65) {
+      for (let y = 0; y < cropH; y += 4) {
+        const gr = Math.min(Math.floor(y / cellH), gridRows - 1);
+        for (let x = 0; x < cropW; x += 4) {
+          const gc = Math.min(Math.floor(x / cellW), gridCols - 1);
+          const idx = (y * cropW + x) * 4;
+          if (idx + 2 < d1.length) {
+            const g1 = (d1[idx] + d1[idx+1] + d1[idx+2]) / 3;
+            const g2 = (d2[idx] + d2[idx+1] + d2[idx+2]) / 3;
+            regionDiffs[gr * gridCols + gc] += Math.abs(g1 - g2);
+            regionCounts[gr * gridCols + gc]++;
+          }
+        }
+      }
+
+      const regionMotions = [];
+      for (let ri = 0; ri < regionDiffs.length; ri++) {
+        if (regionCounts[ri] > 0) regionMotions.push(regionDiffs[ri] / regionCounts[ri]);
+      }
+
+      // Overall average motion across all regions
+      const motionScore = regionMotions.length > 0
+        ? regionMotions.reduce((a, b) => a + b, 0) / regionMotions.length
+        : 2.0;
+
+      // Rigidity detection via coefficient of variation (CV) of per-region motion
+      // Rigid body (phone/screen): all regions move the same → CV < 0.18
+      // Live face: breathing, micro-saccades, muscle tone → varied motion → CV > 0.20
+      let isRigidBody = false;
+      if (regionMotions.length >= 4 && motionScore > 0.3) {
+        const rMean = regionMotions.reduce((a, b) => a + b, 0) / regionMotions.length;
+        const rVar = regionMotions.reduce((a, b) => a + Math.pow(b - rMean, 2), 0) / regionMotions.length;
+        const motionCV = rMean > 0.1 ? Math.sqrt(rVar) / rMean : 0;
+        if (motionCV < 0.18) {
+          isRigidBody = true;
+        }
+      }
+
+      // BLOCK: No motion (printed/static photo) OR rigid-body motion (phone/screen held up)
+      if (motionScore < 1.0 || isRigidBody) {
         scanline.classList.add('d-none');
         reticle.style.borderColor = 'white';
         playAudioFeedback('spoof');
-        showSpoofWarning("Static photo detected. Please present a real live person with natural movement.");
+        if (isRigidBody) {
+          showSpoofWarning("Phone or screen detected — rigid object motion. Only real live faces are accepted.");
+        } else {
+          showSpoofWarning("Static photo detected. No natural movement found. Please present a real live face.");
+        }
         return;
       }
 
@@ -402,8 +442,10 @@
         statusBadge.textContent = '🟢 Camera Ready';
         setTimeout(() => { isScanning = false; }, 1200);
       });
-    }, 'image/jpeg', 0.92);
-  }
+      }, 'image/jpeg', 0.82);
+    }, 'image/jpeg', 0.85);
+  }, 250);
+}
 
   // Display Matched Success Overlay with Auto-Reset Countdown
   function showMatchSuccess(data) {
@@ -465,7 +507,7 @@
       if (autoScanToggle.checked && !isScanning) {
         captureAndVerify();
       }
-    }, 1600);
+    }, 1200);
   }
 
   function stopAutoScan() {
