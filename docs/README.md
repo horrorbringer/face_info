@@ -48,7 +48,7 @@ Welcome to the central documentation index for the Smart Attendance System. This
 - Audit trail verification.
 
 ### 5. [Production Deployment Guide (From Setup 0)](deployment_guide.md)
-> **Summary:** Complete production deployment manual from server provisioning, firewall, Docker, Nginx, Let's Encrypt SSL, to automated backups.
+> **Summary:** Complete production deployment manual covering both **Track A (Docker Compose)** and **Track B (Native Bare-Metal Linux with Systemd, Python venv, PostgreSQL 16+pgvector, and Redis)**, Nginx, Let's Encrypt SSL, and automated backups.
 
 ### 6. [Original Product Specification](smart_attendance_system_spec.md)
 > **Summary:** The project's requirements, scope boundaries, and development phases.
