@@ -305,7 +305,7 @@ Create two Systemd unit files to manage Gunicorn and Celery as reliable backgrou
 
 #### 1. Gunicorn Web Service (`/etc/systemd/system/faceinfo-web.service`)
 ```bash
-sudo nano /etc/systemd/system/faceinfo-web.service
+sudo vim /etc/systemd/system/faceinfo-web.service
 ```
 Paste:
 ```ini
@@ -315,16 +315,16 @@ After=network.target postgresql.service redis-server.service
 Requires=postgresql.service redis-server.service
 
 [Service]
-User=deploy
-Group=deploy
-WorkingDirectory=/home/deploy/face_info
-EnvironmentFile=/home/deploy/face_info/.env
-ExecStart=/home/deploy/face_info/venv/bin/gunicorn config.wsgi:application \
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/face_info
+EnvironmentFile=/home/ubuntu/face_info/.env
+ExecStart=/home/ubuntu/face_info/venv/bin/gunicorn config.wsgi:application \
           --bind 127.0.0.1:8000 \
           --workers 3 \
           --timeout 60 \
-          --access-logfile /home/deploy/face_info/logs/gunicorn-access.log \
-          --error-logfile /home/deploy/face_info/logs/gunicorn-error.log
+          --access-logfile /home/ubuntu/face_info/logs/gunicorn-access.log \
+          --error-logfile /home/ubuntu/face_info/logs/gunicorn-error.log
 Restart=always
 RestartSec=5
 
@@ -344,11 +344,11 @@ After=network.target redis-server.service postgresql.service
 Requires=redis-server.service postgresql.service
 
 [Service]
-User=deploy
-Group=deploy
-WorkingDirectory=/home/deploy/face_info
-EnvironmentFile=/home/deploy/face_info/.env
-ExecStart=/home/deploy/face_info/venv/bin/celery -A config worker -l info
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/face_info
+EnvironmentFile=/home/ubuntu/face_info/.env
+ExecStart=/home/ubuntu/face_info/venv/bin/celery -A config worker -l info
 Restart=always
 RestartSec=10
 
@@ -382,19 +382,19 @@ sudo apt install -y nginx certbot python3-certbot-nginx
 sudo nano /etc/nginx/sites-available/face_info
 ```
 
-Paste the following configuration (replace `attendance.yourdomain.com` with your domain):
+Paste the following configuration (replace `student-attendance.vanny.monster` with your domain):
 
 ```nginx
 server {
     listen 80;
-    server_name attendance.yourdomain.com;
+    server_name student-attendance.vanny.monster;
 
     # Maximum file upload size for multi-angle face pictures
     client_max_body_size 25M;
 
     # In Native Deployment: Nginx serves staticfiles directly from disk for peak speed
     location /static/ {
-        alias /home/deploy/face_info/staticfiles/;
+        alias /home/ubuntu/face_info/staticfiles/;
         expires 30d;
         add_header Cache-Control "public, max-age=2592000";
     }
@@ -420,7 +420,7 @@ sudo nginx -t
 sudo systemctl reload nginx
 
 # Issue Let's Encrypt SSL:
-sudo certbot --nginx -d attendance.yourdomain.com
+sudo certbot --nginx -d student-attendance.vanny.monster
 ```
 
 Certbot will automatically install SSL certificates and configure HTTPS redirects.
@@ -469,14 +469,14 @@ sudo systemctl restart faceinfo-web.service faceinfo-celery.service
 ### 10.2 Automated Daily PostgreSQL Database Backups
 Create a backup script:
 ```bash
-mkdir -p /home/deploy/backups
-nano /home/deploy/backup_db.sh
+mkdir -p /home/ubuntu/backups
+nano /home/ubuntu/backup_db.sh
 ```
 
 Paste (works for both Docker and Native):
 ```bash
 #!/bin/bash
-BACKUP_DIR="/home/deploy/backups"
+BACKUP_DIR="/home/ubuntu/backups"
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 FILENAME="$BACKUP_DIR/faceinfo_db_$TIMESTAMP.sql.gz"
 
@@ -492,10 +492,10 @@ find "$BACKUP_DIR" -name "faceinfo_db_*.sql.gz" -type f -mtime +14 -delete
 
 Make executable and add to crontab:
 ```bash
-chmod +x /home/deploy/backup_db.sh
+chmod +x /home/ubuntu/backup_db.sh
 crontab -e
 # Add line to run every day at 2:00 AM:
-0 2 * * * /home/deploy/backup_db.sh >> /home/deploy/backups/backup.log 2>&1
+0 2 * * * /home/ubuntu/backup_db.sh >> /home/ubuntu/backups/backup.log 2>&1
 ```
 
 ---
