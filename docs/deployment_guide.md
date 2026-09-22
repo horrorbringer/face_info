@@ -474,7 +474,29 @@ python manage.py collectstatic --noinput
 sudo systemctl restart faceinfo-web.service faceinfo-celery.service
 ```
 
-### 10.2 Automated Daily PostgreSQL Database Backups
+### 10.2 Continuous Deployment with GitHub Actions
+
+The repository includes a ready-to-use GitHub Actions workflow in [`.github/workflows/deploy.yml`](file:///.github/workflows/deploy.yml) that executes on every push to `main`:
+1. **Automated Test Suite**: Boots Python 3.12, installs system libraries (`libgl1`, `libglib2.0-0`), installs `requirements.txt`, and executes `python manage.py test`.
+2. **Automated SSH Deployment**: Connects to your production Ubuntu server, pulls latest commits, runs migrations, compiles static assets with proper permissions, and restarts `faceinfo-web` and `faceinfo-celery` systemd services.
+
+#### 1. Configure Passwordless Systemctl for CI/CD User
+To allow the deployment script to restart the background services without hanging on a sudo password prompt, create a sudoers rule:
+```bash
+echo "ubuntu ALL=(ALL) NOPASSWD: /bin/systemctl restart faceinfo-web.service, /bin/systemctl restart faceinfo-celery.service, /bin/systemctl reload nginx" | sudo tee /etc/sudoers.d/faceinfo
+sudo chmod 0440 /etc/sudoers.d/faceinfo
+```
+
+#### 2. Configure GitHub Repository Secrets
+In your GitHub repository, go to **Settings** > **Secrets and variables** > **Actions** and add:
+- `PROD_SSH_HOST`: Your server IP or domain (e.g. `student-attendance.vanny.monster`)
+- `PROD_SSH_USER`: SSH user on the server (e.g. `ubuntu`)
+- `PROD_SSH_KEY`: The private SSH key (e.g. content of `~/.ssh/id_rsa` or your deployment private key)
+- `PROD_SSH_PORT`: (Optional, defaults to `22`)
+
+---
+
+### 10.3 Automated Daily PostgreSQL Database Backups
 Create a backup script:
 ```bash
 mkdir -p /home/ubuntu/backups
