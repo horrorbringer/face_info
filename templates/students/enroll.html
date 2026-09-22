@@ -101,7 +101,7 @@
             <div class="row g-4">
               <div class="col-lg-7">
                 <div class="position-relative bg-dark rounded overflow-hidden" style="min-height: 360px;">
-                  <video id="webcam" class="w-100 h-100" autoplay playsinline style="max-height: 420px; object-fit: cover;"></video>
+                  <video id="webcam" class="w-100 h-100" autoplay playsinline muted style="max-height: 420px; object-fit: cover;"></video>
                   
                   <!-- Face Framing Oval Guide -->
                   <div class="position-absolute top-50 start-50 translate-middle pointer-events-none border border-2 border-white rounded-pill opacity-75"
@@ -287,6 +287,7 @@
     }).then(s => {
       stream = s;
       video.srcObject = s;
+      video.play().catch(e => console.warn("video.play() warning:", e));
       cameraError.classList.add('d-none');
     }).catch(err => {
       console.warn("Camera error:", err);
@@ -303,7 +304,10 @@
 
   // Snapshot Capture
   snapBtn.addEventListener('click', () => {
-    if (!video.videoWidth || !video.videoHeight) return;
+    if (!video.videoWidth || !video.videoHeight) {
+      alert("Camera feed is not ready yet. Please ensure camera access is allowed and wait a second.");
+      return;
+    }
     if (capturedBlobs.length >= 5) {
       alert("Maximum 5 frames can be captured.");
       return;
