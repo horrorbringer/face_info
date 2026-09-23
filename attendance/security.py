@@ -111,3 +111,46 @@ def get_dynamic_qr_info(session_id: int) -> dict:
         "expires_in_seconds": seconds_remaining,
     }
 
+
+from rest_framework import exceptions
+from rest_framework.authentication import TokenAuthentication, get_authorization_header
+
+
+class FlexibleTokenAuthentication(TokenAuthentication):
+    """
+    Tolerant Token Authentication:
+    Accepts any of the following in the HTTP 'Authorization' header:
+      1. Authorization: Token <key>     (standard DRF)
+      2. Authorization: Bearer <key>    (OAuth standard)
+      3. Authorization: <key>           (raw 40-character token pasted into Swagger UI or curl)
+    """
+    keyword = "Token"
+
+    def authenticate(self, request):
+        auth = get_authorization_header(request).split()
+
+        if not auth:
+            return None
+
+        # Case 1: Standard two-part header ("Token <key>" or "Bearer <key>")
+        if len(auth) == 2:
+            prefix = auth[0].decode("utf-8", errors="ignore").lower()
+            if prefix in ("token", "bearer"):
+                try:
+                    token_key = auth[1].decode("utf-8")
+                except UnicodeError:
+                    raise exceptions.AuthenticationFailed("Invalid token header format.")
+                return self.authenticate_credentials(token_key)
+
+        # Case 2: Single-part header ("<key>" directly without prefix)
+        if len(auth) == 1:
+            try:
+                token_key = auth[0].decode("utf-8")
+            except UnicodeError:
+                raise exceptions.AuthenticationFailed("Invalid token header format.")
+            if len(token_key) == 40:
+                return self.authenticate_credentials(token_key)
+
+        return super().authenticate(request)
+
+

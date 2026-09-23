@@ -28,7 +28,12 @@ def _app():
     # Pass path directly if isdir so FaceAnalysis finds onnx files directly without prepending /models/
     model_name = settings.FACE_MODEL_PATH if os.path.isdir(settings.FACE_MODEL_PATH) else os.path.basename(settings.FACE_MODEL_PATH)
     root_dir = os.path.dirname(settings.FACE_MODEL_PATH)
-    app = FaceAnalysis(name=model_name, root=root_dir, providers=["CPUExecutionProvider"])
+    app = FaceAnalysis(
+        name=model_name,
+        root=root_dir,
+        allowed_modules=["detection", "recognition", "landmark_3d_68"],
+        providers=["CPUExecutionProvider"],
+    )
     app.prepare(ctx_id=-1, det_thresh=0.4, det_size=(640, 640))
     _cached_app = app
     return app
@@ -102,8 +107,8 @@ def check_liveness(image, face, prev_image=None):
         depth_ratio = depth_span / face_width
 
         # Planar 2D photos/screens lack natural 3D depth curvature
-        if depth_ratio < 0.10:
-            score -= 0.65
+        if depth_ratio < 0.05:
+            score -= 0.35
             reasons.append("Planar 2D surface detected (flat photo/screen)")
 
         # Compute Eye Aspect Ratio (EAR) for blink detection
@@ -149,16 +154,16 @@ def check_liveness(image, face, prev_image=None):
         if prev_crop.shape == crop.shape:
             gray_prev = cv2.cvtColor(prev_crop, cv2.COLOR_BGR2GRAY)
             temporal_diff = float(np.mean(np.abs(gray.astype(np.float32) - gray_prev.astype(np.float32))))
-            # A live face exhibits natural micro-motion; held phones/static photos have minimal
-            if temporal_diff < 2.0:
-                score -= 0.70
+            # A true static image/still replay has near-zero pixel difference (< 0.4)
+            if temporal_diff < 0.4:
+                score -= 0.35
                 reasons.append("Insufficient physiological micro-movement (static or held photo/screen)")
 
     if gray is not None and crop.shape[0] > 40 and crop.shape[1] > 40:
         # 2a. Blur / low texture variance (typical of paper printouts or out-of-focus recaptures)
         lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-        if lap_var < 20.0:
-            score -= 0.55
+        if lap_var < 10.0:
+            score -= 0.30
             reasons.append("Unnatural low texture variance (printed photo or blur)")
 
         # 2b. Screen Moiré / Digital Sub-Pixel Grid (2D Fast Fourier Transform)
@@ -171,33 +176,32 @@ def check_liveness(image, face, prev_image=None):
         low_band = mag[cy - 6:cy + 6, cx - 6:cx + 6].sum()
         total_power = mag.sum()
         high_freq_ratio = (total_power - low_band) / max(1.0, total_power)
-        if high_freq_ratio > 0.82:
-            score -= 0.55
+        if high_freq_ratio > 0.94:
+            score -= 0.30
             reasons.append("Screen grid/moiré pattern detected (display screen)")
 
-        # 2c. Skin color gamut check in YCrCb
+        # 2c. Skin color gamut check in YCrCb (tolerant to varied indoor lighting & skin tones)
         ycrcb = cv2.cvtColor(crop, cv2.COLOR_BGR2YCrCb)
         cr = ycrcb[:, :, 1]
         cb = ycrcb[:, :, 2]
-        skin_mask = (cr >= 128) & (cr <= 182) & (cb >= 68) & (cb <= 138)
+        skin_mask = (cr >= 125) & (cr <= 185) & (cb >= 65) & (cb <= 140)
         skin_ratio = float(skin_mask.sum()) / float(crop.shape[0] * crop.shape[1])
-        if skin_ratio < 0.12:
-            score -= 0.40
+        if skin_ratio < 0.08:
+            score -= 0.25
             reasons.append("Artificial color spectrum (display backlight)")
 
-        # 2d. Screen glare / specular highlight detection
-        # Phone/tablet glass screens produce bright, low-saturation specular reflections
+        # 2d. Screen glare / specular highlight detection (tolerant to forehead/glasses reflections)
         hsv_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
         v_ch = hsv_crop[:, :, 2]
         s_ch = hsv_crop[:, :, 1]
-        glare_mask = (v_ch > 230) & (s_ch < 40)
+        glare_mask = (v_ch > 240) & (s_ch < 30)
         glare_ratio = float(glare_mask.sum()) / float(v_ch.size)
-        if glare_ratio > 0.04:
-            score -= 0.35
+        if glare_ratio > 0.12:
+            score -= 0.25
             reasons.append("Screen glare / specular reflection detected")
 
     score = max(0.0, min(1.0, score))
-    is_real = score >= 0.55
+    is_real = score >= 0.50
     details = ", ".join(reasons) if reasons else "Real 3D face verified"
     metrics = {
         "depth_ratio": round(float(depth_ratio), 4),
@@ -276,35 +280,63 @@ def process_kiosk_frame(upload, prev_upload=None):
     return vector, "approved-onnx-model", liveness_info
 
 
-def best_match(vector):
-    """Vectorized cosine similarity search using batch numpy operations."""
-    from students.models import FaceEmbedding
+def best_match(vector, class_room=None):
+    """
+    Vectorized multi-angle cosine similarity search using batch numpy operations.
+    Evaluates all enrolled angles in StudentFace (and falls back to FaceEmbedding).
+    """
     target = np.asarray(vector, dtype=np.float32)
     target_norm = np.linalg.norm(target)
     if target_norm < 1e-10:
         return None, -1.0
 
-    candidates = list(
-        FaceEmbedding.objects.select_related("student")
-        .filter(student__is_active=True, student__consent_given_at__isnull=False)
-    )
-    if not candidates:
-        return None, -1.0
-
-    # Build matrix of stored vectors for batch cosine similarity
     vectors = []
-    valid = []
-    for c in candidates:
-        stored = np.asarray(c.vector, dtype=np.float32)
-        if stored.shape == target.shape:
-            vectors.append(stored)
-            valid.append(c)
+    valid_students = []
+    seen_student_ids = set()
 
-    if not valid:
+    # 1. Primary multi-angle source: attendance.models.StudentFace (1 to 5 angles per student)
+    try:
+        from attendance.models import StudentFace
+        qs = StudentFace.objects.select_related("student").filter(
+            student__is_active=True,
+            student__consent_given_at__isnull=False,
+        )
+        if class_room is not None:
+            qs = qs.filter(student__class_room=class_room)
+
+        for sf in qs:
+            stored = np.asarray(sf.embedding, dtype=np.float32)
+            if stored.shape == target.shape:
+                vectors.append(stored)
+                valid_students.append(sf.student)
+                seen_student_ids.add(sf.student_id)
+    except Exception:
+        pass
+
+    # 2. Fallback for any students enrolled only in students.models.FaceEmbedding
+    try:
+        from students.models import FaceEmbedding
+        fe_qs = FaceEmbedding.objects.select_related("student").filter(
+            student__is_active=True,
+            student__consent_given_at__isnull=False,
+        )
+        if class_room is not None:
+            fe_qs = fe_qs.filter(student__class_room=class_room)
+
+        for fe in fe_qs:
+            if fe.student_id not in seen_student_ids:
+                stored = np.asarray(fe.vector, dtype=np.float32)
+                if stored.shape == target.shape:
+                    vectors.append(stored)
+                    valid_students.append(fe.student)
+    except Exception:
+        pass
+
+    if not vectors:
         return None, -1.0
 
     matrix = np.array(vectors, dtype=np.float32)  # (N, D)
     norms = np.linalg.norm(matrix, axis=1)         # (N,)
     similarities = np.dot(matrix, target) / (target_norm * norms + 1e-10)  # (N,)
     best_idx = int(np.argmax(similarities))
-    return valid[best_idx].student, float(similarities[best_idx])
+    return valid_students[best_idx], float(similarities[best_idx])

@@ -413,3 +413,87 @@ class SmartAttendanceTests(TestCase):
         r2 = AttendanceRecord.objects.get(student=self.student2, session=self.session)
         self.assertEqual(r1.status, "present")
         self.assertEqual(r2.status, "absent")
+
+    def test_class_report_export_csv(self):
+        AttendanceRecord.objects.create(
+            student=self.student,
+            session=self.session,
+            status="present",
+            method="face",
+            confidence_score=0.92,
+        )
+        self.client.force_authenticate(user=self.teacher_user)
+        resp = self.client.get(f"/api/reports/class/{self.classroom.id}/export-csv/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp["Content-Type"], "text/csv")
+        self.assertIn("attachment; filename=", resp["Content-Disposition"])
+        content = resp.content.decode("utf-8")
+        self.assertIn("Session Date,Classroom,Session Time", content)
+        self.assertIn(self.student.student_id, content)
+        self.assertIn("Present", content)
+        self.assertIn("Face Recognition", content)
+
+    def test_multi_angle_best_match(self):
+        from recognition.services import best_match
+        dummy_vector_front = [0.1] * 512
+        dummy_vector_profile = [0.8] * 512
+
+        # Create multi-angle StudentFace embeddings
+        StudentFace.objects.create(student=self.student, embedding=dummy_vector_front)
+        StudentFace.objects.create(student=self.student, embedding=dummy_vector_profile)
+
+        # Test matching against side profile vector
+        matched_student, score = best_match(dummy_vector_profile)
+        self.assertIsNotNone(matched_student)
+        self.assertEqual(matched_student.student_id, self.student.student_id)
+        self.assertGreater(score, 0.99)
+
+        # Test classroom filtering
+        other_room = ClassRoom.objects.create(name="Room 999")
+        empty_student, score2 = best_match(dummy_vector_profile, class_room=other_room)
+        self.assertIsNone(empty_student)
+
+    def test_teacher_session_live_feed(self):
+        url = f"/api/teacher/sessions/{self.session.id}/live-feed/"
+        self.client.force_authenticate(user=self.teacher_user)
+
+        # Create an attendance record
+        AttendanceRecord.objects.create(
+            student=self.student,
+            session=self.session,
+            status="present",
+            method="face",
+            confidence_score=0.94
+        )
+
+        resp = self.client.get(url)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        data = resp.json()
+        self.assertEqual(data["session_id"], self.session.id)
+        self.assertEqual(data["present_count"], 1)
+        self.assertEqual(data["checked_in_count"], 1)
+        self.assertEqual(len(data["recent_checkins"]), 1)
+        self.assertEqual(data["recent_checkins"][0]["student_id"], self.student.student_id)
+        self.assertEqual(data["recent_checkins"][0]["status"], "present")
+
+    def test_kiosk_rate_limiter(self):
+        from django.test import RequestFactory
+        from recognition.views import check_kiosk_rate_limit
+        from django.core.cache import cache
+
+        cache.clear()
+        factory = RequestFactory()
+        req = factory.post("/", REMOTE_ADDR="198.51.100.25")
+
+        # Within limit
+        limited, ip = check_kiosk_rate_limit(req, max_requests=3, window_secs=30)
+        self.assertFalse(limited)
+        self.assertEqual(ip, "198.51.100.25")
+
+        check_kiosk_rate_limit(req, max_requests=3, window_secs=30)
+        check_kiosk_rate_limit(req, max_requests=3, window_secs=30)
+
+        # 4th request exceeds limit of 3
+        limited_4th, _ = check_kiosk_rate_limit(req, max_requests=3, window_secs=30)
+        self.assertTrue(limited_4th)
+

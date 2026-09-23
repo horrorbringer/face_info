@@ -58,11 +58,13 @@ When `DATABASE_URL` is omitted, Django defaults to a local SQLite database (`db.
    python manage.py runserver
    ```
 
-5. **Access the application:**
-   - **Admin portal:** [http://127.0.0.1:8000/admin/](http://127.0.0.1:8000/admin/) (log in to create staff users and manage students)
-   - **Face Scanner / Kiosk:** [http://127.0.0.1:8000/](http://127.0.0.1:8000/)
-   - **Manual Student Lookup:** [http://127.0.0.1:8000/students/](http://127.0.0.1:8000/students/)
-   - **Student Face Enrollment Studio:** `http://127.0.0.1:8000/students/<student_id>/enroll/` (camera capture / multi-angle photo upload)
+5. **Access the Web Portal (By User Role):**
+   - **Kiosk Station (`/`)**: [http://127.0.0.1:8000/](http://127.0.0.1:8000/) — *For Kiosk Operators & Gate Staff*. Automated camera check-in with 3D anti-spoofing.
+   - **Student Management (`/students/lookup/`)**: [http://127.0.0.1:8000/students/lookup/](http://127.0.0.1:8000/students/lookup/) — *For Teachers & Registrars*. Manual ID/name search fallback.
+   - **Biometric Enrollment Studio**: `http://127.0.0.1:8000/students/<student_id>/enroll/` — *For Registrars & Staff*. Multi-angle photo capture with privacy consent.
+   - **Biometric Revocation**: `http://127.0.0.1:8000/students/<student_id>/revoke/` — *For Registrars & Admins*. Permanent template deletion upon consent withdrawal.
+   - **Admin Portal (`/admin/`)**: [http://127.0.0.1:8000/admin/](http://127.0.0.1:8000/admin/) — *For School Principals & IT Admins*. Manage classrooms, teachers, schedules, audit logs, and Telegram alerts.
+   - *(Note: Students interact primarily via the Flutter Mobile App)*
 
 ---
 

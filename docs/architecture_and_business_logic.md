@@ -261,16 +261,35 @@ erDiagram
 | `GET` | `/api/reports/class/{id}/` | Staff / Teacher | Aggregated class metrics: present/late/absent rates & counts |
 | `GET` | `/api/reports/student/{id}/` | Staff / Teacher | Aggregated student metrics: individual attendance percentage |
 
-### Staff Web Application Routes
+### 4.2 Staff & Admin Web Portal (Target Audiences)
 
-| Method | Path | Auth / Permission | Description |
-| :--- | :--- | :--- | :--- |
-| `GET/POST` | `/` | Login Required | Staff Face Lookup Kiosk (camera capture & candidate confirmation) |
-| `GET` | `/students/` | Login Required | Manual Student Lookup by name, ID, or class year |
-| `GET/POST` | `/students/<student_id>/enroll/` | `students.change_student` | Biometric Face Enrollment Studio (Webcam multi-angle / File upload) |
-| `GET/POST` | `/students/<student_id>/revoke/` | `students.change_student` | Biometric consent revocation & permanent template deletion |
-| `GET/POST` | `/students/import/` | `students.change_student` | Bulk student roster CSV import |
-| `GET/POST` | `/admin/` | Staff / Superuser | Django administrative portal |
+The Web Portal is designed exclusively for **School Staff, Teachers, and Administrators** (students interact primarily via the Flutter Mobile App).
+
+```mermaid
+flowchart LR
+    subgraph WebPortal ["🌐 Web Portal (Browser)"]
+        Kiosk["1. Kiosk Station (/)<br>• Gate guards / Entrance iPad<br>• Real-time Face Scanner<br>• 3D Anti-Spoofing"]
+        Mgmt["2. Student Management (/students/)<br>• Registrars & Teachers<br>• Multi-Angle Face Enrollment<br>• Manual Fallback Lookup<br>• Consent Revocation & CSV Import"]
+        Admin["3. Admin Dashboard (/admin/)<br>• School Principals & IT<br>• Classes, Schedules, Teachers<br>• Audit Logs & Alert Settings"]
+    end
+```
+
+| Audience / Role | Primary Interface | Allowed Tasks |
+| :--- | :--- | :--- |
+| **Kiosk Operators / Gate Staff** | `/` *(Kiosk Station)* | Unattended/attended tablet scanner. Detects faces via webcam, verifies 3D anti-spoofing, matches against `antelopev2` embeddings, and records attendance. |
+| **Registrars & Class Teachers** | `/students/` *(Student Portal)* | • **Face Enrollment Studio (`/students/<id>/enroll/`)**: Capture 1–3 facial angles with documented consent.<br>• **Manual Lookup (`/students/lookup/`)**: Search by Name or ID when face scans cannot be performed (e.g. bandages, camera offline).<br>• **Biometric Revocation (`/students/<id>/revoke/`)**: GDPR/FERPA compliance — permanently deletes biometric vectors if consent is withdrawn.<br>• **Roster CSV Import (`/students/import/`)**: Bulk onboard student lists. |
+| **School Admins & IT Officers** | `/admin/` *(Django Admin)* | Manage classrooms, subjects, teacher accounts, view `LookupAuditLog` records for spoofing attempts, configure Telegram Bot alert channels, and review school-wide attendance metrics. |
+
+#### Web Portal Route Reference
+
+| Method | Path | Auth / Permission | Target User | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| `GET/POST` | `/` | Login Required | Kiosk Operators / Staff | Live Face Scanner Kiosk with real-time anti-spoofing |
+| `GET` | `/students/` | Login Required | Teachers / Registrars | Manual Student Fallback Lookup by name, ID, or class |
+| `GET/POST` | `/students/<student_id>/enroll/` | `students.change_student` | Registrars / Staff | Multi-Angle Biometric Face Enrollment Studio |
+| `GET/POST` | `/students/<student_id>/revoke/` | `students.change_student` | Registrars / Admins | Privacy Consent Revocation & template deletion |
+| `GET/POST` | `/students/import/` | `students.change_student` | Registrars / Admins | Bulk student roster CSV import |
+| `GET/POST` | `/admin/` | Staff / Superuser | School Admins / IT | Full institutional administrative dashboard |
 
 ---
 

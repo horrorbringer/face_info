@@ -45,6 +45,62 @@ Content-Type: application/json
 
 ## 2. Student Mobile App Workflows
 
+### Flow 0: First-Time Login & Face Enrollment Onboarding (UX Architecture & Policy)
+
+When a student logs into the mobile app for the first time, check their profile via `GET /api/students/me/` to inspect `face_embeddings_count`:
+
+```dart
+// Recommended Mobile App Onboarding Router
+final profile = await api.getStudentProfile();
+if (profile.faceEmbeddingsCount == 0 && !hasSeenEnrollmentPrompt) {
+  showEnrollmentPromptBottomSheet();
+} else {
+  navigateToHomeDashboard();
+}
+```
+
+#### A. The Recommended "Soft-Prompt" Bottom Sheet
+**Never hard-block a student from entering the app or checking into class.** If a student is running late on day one, a mandatory photo enrollment will cause them to miss attendance. Instead, show a friendly non-blocking sheet:
+
+```
++-------------------------------------------------------------+
+|  📸 Enable Hands-Free Face Check-In                        |
+|                                                             |
+|  Walk past campus entrance kiosks without taking out your   |
+|  phone. It only takes 30 seconds to set up.                 |
+|                                                             |
+|  [  Enroll My Face Now (Camera)  ]  --> Primary Action      |
+|  [  Remind Me Later              ]  --> Neutral Dismiss     |
+|  [  I prefer to use QR Code only ]  --> Privacy Opt-Out     |
++-------------------------------------------------------------+
+```
+
+1. **"Enroll My Face Now"**:
+   - Opens in-app live selfie camera viewfinder.
+   - Captures 1 to 3 quick angles (Front, Slight Left, Slight Right).
+   - Sends multipart request to `POST /api/face/enroll/` with images.
+   - Automatically stamps `consent_given_at` and unlocks entrance kiosk matching.
+2. **"Remind Me Later"**:
+   - Takes them straight to the Home Dashboard so they can attend class.
+   - Shows a subtle dashboard reminder banner: *"Face check-in not set up (Tap to complete)"*.
+3. **"I prefer to use QR Code only" (Privacy Opt-Out)**:
+   - Sets a local flag so they are never prompted again.
+   - Complies with student privacy regulations (GDPR/FERPA). Unenrolled students check in 100% via QR code.
+
+---
+
+#### B. First-Time Mobile Edge Cases & Handling Scenarios
+
+| Scenario | Risk / Problem | Recommended Mobile App Behavior |
+| :--- | :--- | :--- |
+| **1. Friend Fraud (Spoofing)** | Student tries to upload a friend's photo so the friend can fake attendance. | **Disable camera gallery upload** on mobile enrollment. Force live front camera capture with active blink or head turn verification. *(Or require in-person staff enrollment at `/students/<id>/enroll/`)*. |
+| **2. Unenrolled at Kiosk** | Student walks up to the campus entrance kiosk before enrolling. | Kiosk displays: `⚠️ No Match Found`. Subtitle instructs: *"Not enrolled yet? Scan QR in your mobile app or see your teacher."* Automatically resets in 2s. |
+| **3. Poor Lighting / Blur** | Student takes photo in a dark room or with glasses glare. | Backend (`POST /api/face/enroll/`) validates face clarity. If invalid, returns `400 Bad Request` (`"No clear face detected in photo 2. Please move to a brighter area."`). Mobile highlights the failed angle for quick retry. |
+| **4. Appearance Change** | Student changes hairstyle, grows a beard, or gets new glasses. | In **Profile > Face Biometrics**, provide **"Add Extra Angle"** (appends a new vector to `StudentFace` to improve accuracy) and **"Delete & Re-enroll"**. |
+| **5. Minor Consent (< 18)** | Biometric regulations requiring parental/guardian consent. | Include a mandatory consent checkbox on the selfie screen: `[x] I (or my guardian) consent to the storage of mathematical face templates for school attendance.` |
+
+---
+
 ### Flow 1: QR Code Attendance Check-In
 Using Flutter package: `mobile_scanner` or `qr_code_scanner`.
 
@@ -172,7 +228,48 @@ Body: MultipartRequest
 
 ### Flow 5: Finalize Session & Trigger Absence Alerts
 - **Endpoint:** `POST /api/teacher/sessions/<session_id>/end/`
+- **Payload:** `{}`
 - Stamps `ended_at = now()` and automatically dispatches async Celery background tasks to notify parents/guardians via Telegram or Email for all students with no attendance record.
+
+### Flow 6: Export Classroom Attendance CSV
+- **Endpoint:** `GET /api/reports/class/<class_id>/export-csv/`
+- **Query Params (Optional):** `?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD`
+- **Response:** `text/csv` stream with header `Content-Disposition: attachment; filename="attendance_report_<class>_<date>.csv"`.
+- **Columns:** `Session Date, Classroom, Session Time, Student ID, Full Name, Status, Check-In Method, Checked In At, Confidence Score, Edited By`.
+
+### Flow 7: Live Attendance Polling Feed (Real-Time Counter)
+- **Endpoint:** `GET /api/teacher/sessions/<session_id>/live-feed/`
+- **Query Params (Optional):** `?since=2026-09-23T08:00:00Z`
+- **Response:**
+  ```json
+  {
+    "session_id": 1,
+    "class_room": "Computer Science 101",
+    "date": "2026-09-23",
+    "is_ended": false,
+    "total_enrolled": 30,
+    "checked_in_count": 22,
+    "present_count": 20,
+    "late_count": 2,
+    "absent_count": 0,
+    "unmarked_count": 8,
+    "server_time": "2026-09-23T08:15:30.123456Z",
+    "recent_checkins": [
+      {
+        "record_id": 45,
+        "student_id": "STU001",
+        "student_name": "Dara Pich",
+        "status": "present",
+        "method": "face",
+        "confidence_score": 0.9412,
+        "checked_in_at": "2026-09-23T08:14:55Z"
+      }
+    ]
+  }
+  ```
+- **Mobile Integration:** Poll every 3–5 seconds while the teacher's active session screen is open to animate new check-ins and live counters.
+
+
 
 ---
 

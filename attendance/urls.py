@@ -28,6 +28,7 @@ urlpatterns = [
     path("teacher/classes/today/", views.TeacherTodayClassesView.as_view(), name="teacher-classes-today"),
     path("teacher/sessions/", views.TeacherSessionCreateView.as_view(), name="teacher-session-create"),
     path("teacher/sessions/<int:session_id>/roster/", views.TeacherSessionRosterView.as_view(), name="teacher-session-roster"),
+    path("teacher/sessions/<int:session_id>/live-feed/", views.TeacherSessionLiveFeedView.as_view(), name="teacher-session-live-feed"),
     path("teacher/sessions/<int:session_id>/attendance/bulk/", views.TeacherSessionBulkAttendanceView.as_view(), name="teacher-session-attendance-bulk"),
     path("teacher/sessions/<int:session_id>/qr/", views.SessionRotateQRView.as_view(), name="teacher-session-qr"),
     path("teacher/sessions/<int:session_id>/qr/dynamic/", views.SessionDynamicQRView.as_view(), name="teacher-session-qr-dynamic"),
@@ -37,5 +38,6 @@ urlpatterns = [
 
     # Reports
     path("reports/class/<int:class_id>/", views.ClassReportView.as_view(), name="reports-class"),
+    path("reports/class/<int:class_id>/export-csv/", views.ClassReportExportCSVView.as_view(), name="reports-class-export-csv"),
     path("reports/student/<int:student_id>/", views.StudentReportView.as_view(), name="reports-student"),
 ]

@@ -576,6 +576,75 @@ class TeacherSessionRosterView(APIView):
         })
 
 
+class TeacherSessionLiveFeedView(APIView):
+    """
+    GET /api/teacher/sessions/{session_id}/live-feed/
+    Optional Query: ?since=2026-09-23T08:00:00Z
+    Provides a real-time attendance polling feed for teachers during active class sessions.
+    Returns session attendance counters and newly recorded check-ins (e.g. from Kiosk or mobile).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, session_id):
+        session = get_object_or_404(
+            Session.objects.select_related("class_room", "class_room__teacher"),
+            id=session_id
+        )
+        if hasattr(request.user, "teacher_profile") and not request.user.is_staff:
+            if session.class_room.teacher != request.user.teacher_profile:
+                return Response(
+                    {"error": "Not authorized to view live attendance for this session."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        total_enrolled = session.class_room.students.filter(is_active=True).count()
+        records_qs = AttendanceRecord.objects.filter(
+            session=session, is_deleted=False
+        ).select_related("student")
+
+        since_str = request.query_params.get("since")
+        if since_str:
+            try:
+                from datetime import datetime
+                clean_str = since_str.replace("Z", "+00:00")
+                since_dt = datetime.fromisoformat(clean_str)
+                records_qs = records_qs.filter(checked_in_at__gt=since_dt)
+            except Exception:
+                pass
+
+        present_count = AttendanceRecord.objects.filter(session=session, status="present", is_deleted=False).count()
+        late_count = AttendanceRecord.objects.filter(session=session, status="late", is_deleted=False).count()
+        absent_count = AttendanceRecord.objects.filter(session=session, status="absent", is_deleted=False).count()
+        unmarked_count = max(0, total_enrolled - (present_count + late_count + absent_count))
+
+        recent_records = []
+        for r in records_qs.order_by("-checked_in_at")[:50]:
+            recent_records.append({
+                "record_id": r.id,
+                "student_id": r.student.student_id,
+                "student_name": r.student.full_name,
+                "status": r.status,
+                "method": r.method,
+                "confidence_score": round(r.confidence_score, 4) if r.confidence_score is not None else None,
+                "checked_in_at": r.checked_in_at.isoformat(),
+            })
+
+        return Response({
+            "session_id": session.id,
+            "class_room": session.class_room.name,
+            "date": str(session.date),
+            "is_ended": session.ended_at is not None,
+            "total_enrolled": total_enrolled,
+            "checked_in_count": present_count + late_count,
+            "present_count": present_count,
+            "late_count": late_count,
+            "absent_count": absent_count,
+            "unmarked_count": unmarked_count,
+            "server_time": timezone.now().isoformat(),
+            "recent_checkins": recent_records,
+        })
+
+
 class TeacherSessionBulkAttendanceView(APIView):
     """
     POST /api/teacher/sessions/{session_id}/attendance/bulk/
@@ -846,6 +915,75 @@ class ClassReportView(APIView):
         })
 
 
+class ClassReportExportCSVView(APIView):
+    """
+    GET /api/reports/class/{class_id}/export-csv/
+    Streams a CSV file containing all attendance logs for a classroom.
+    Supports optional filters: ?date_from=YYYY-MM-DD, ?date_to=YYYY-MM-DD, ?session_id=<id>
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, class_id):
+        import csv
+        from django.http import HttpResponse
+
+        classroom = get_object_or_404(ClassRoom, id=class_id)
+        records = (
+            AttendanceRecord.objects.select_related("student", "session")
+            .filter(session__class_room=classroom, is_deleted=False)
+            .order_by("-session__date", "-session__start_time", "student__student_id")
+        )
+
+        session_id = request.query_params.get("session_id")
+        if session_id:
+            records = records.filter(session_id=session_id)
+
+        date_from = request.query_params.get("date_from")
+        if date_from:
+            records = records.filter(session__date__gte=date_from)
+
+        date_to = request.query_params.get("date_to")
+        if date_to:
+            records = records.filter(session__date__lte=date_to)
+
+        filename = f"attendance_report_{classroom.name.replace(' ', '_')}_{timezone.localtime().strftime('%Y%m%d')}.csv"
+        response = HttpResponse(content_type="text/csv")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+
+        writer = csv.writer(response)
+        writer.writerow([
+            "Session Date",
+            "Classroom",
+            "Session Time",
+            "Student ID",
+            "Full Name",
+            "Status",
+            "Check-In Method",
+            "Checked In At",
+            "Confidence Score",
+            "Edited By",
+        ])
+
+        for r in records:
+            check_in_str = timezone.localtime(r.checked_in_at).strftime("%Y-%m-%d %H:%M:%S") if r.checked_in_at else "-"
+            conf_str = f"{r.confidence_score:.4f}" if r.confidence_score is not None else "-"
+            editor_str = r.edited_by.username if r.edited_by else "-"
+            writer.writerow([
+                str(r.session.date),
+                classroom.name,
+                f"{r.session.start_time} - {r.session.end_time}",
+                r.student.student_id,
+                r.student.full_name,
+                r.get_status_display(),
+                r.get_method_display(),
+                check_in_str,
+                conf_str,
+                editor_str,
+            ])
+
+        return response
+
+
 class StudentReportView(APIView):
     """
     GET /api/reports/student/{id}/
@@ -992,7 +1130,7 @@ def api_docs_view(request):
 def api_schema_view(request):
     """
     GET /api/schema/
-    Returns OpenAPI 3.0 specification in JSON format.
+    Returns complete OpenAPI 3.0 specification in JSON format for Swagger UI.
     """
     from django.http import JsonResponse
 
@@ -1001,15 +1139,17 @@ def api_schema_view(request):
         "info": {
             "title": "Smart Attendance System API",
             "version": "1.0.0",
-            "description": "REST API documentation for Student & Teacher Attendance tracking, QR code check-in, Face Recognition, and Reports.",
+            "description": "Comprehensive REST API documentation for Student & Teacher Attendance tracking, QR code check-in, Face Recognition biometric verification, Live Classroom Feeds, and Reports.",
         },
         "servers": [{"url": "/api", "description": "Current Server API Root"}],
         "tags": [
             {"name": "Auth", "description": "Authentication and user credentials"},
-            {"name": "Students", "description": "Student attendance, check-in, and profiles"},
-            {"name": "Teachers", "description": "Teacher sessions, live rosters, and QR rotation"},
-            {"name": "Reports", "description": "Class and student aggregated attendance analytics"},
-            {"name": "System", "description": "System health and discovery"},
+            {"name": "Students", "description": "Student profile, daily schedule, and alert history"},
+            {"name": "Attendance", "description": "QR and Face biometric attendance check-in"},
+            {"name": "Biometrics", "description": "Facial enrollment and biometric template registration"},
+            {"name": "Teachers", "description": "Teacher sessions, live rosters, dynamic QR, and real-time feeds"},
+            {"name": "Reports", "description": "Aggregated classroom analytics, CSV exports, and student metrics"},
+            {"name": "System", "description": "Discovery index and service health check"},
         ],
         "components": {
             "securitySchemes": {
@@ -1017,15 +1157,32 @@ def api_schema_view(request):
                     "type": "apiKey",
                     "in": "header",
                     "name": "Authorization",
-                    "description": "Enter your token as: Token <your_token>",
+                    "description": "Enter token in format: Token <your_token>",
                 }
             }
         },
         "paths": {
+            "/": {
+                "get": {
+                    "tags": ["System"],
+                    "summary": "API Discovery Root",
+                    "description": "Returns a navigational index of all available API endpoints.",
+                    "responses": {"200": {"description": "API navigation dictionary"}},
+                }
+            },
+            "/health/": {
+                "get": {
+                    "tags": ["System"],
+                    "summary": "System & Dependency Health Check",
+                    "description": "Monitors connectivity to PostgreSQL database, Redis cache/broker, Celery worker pool, and InsightFace AI runtime.",
+                    "responses": {"200": {"description": "Service health status dictionary"}},
+                }
+            },
             "/auth/login/": {
                 "post": {
                     "tags": ["Auth"],
-                    "summary": "Authenticate user and get API Token",
+                    "summary": "Authenticate user & obtain API Token",
+                    "description": "Validates username & password for students, teachers, or administrators. Returns unique DRF auth token and user profile role.",
                     "requestBody": {
                         "required": True,
                         "content": {
@@ -1041,13 +1198,14 @@ def api_schema_view(request):
                             }
                         },
                     },
-                    "responses": {"200": {"description": "Token and profile info returned"}},
+                    "responses": {"200": {"description": "Auth token and user role profile"}},
                 }
             },
             "/auth/logout/": {
                 "post": {
                     "tags": ["Auth"],
-                    "summary": "Revoke the current authentication token",
+                    "summary": "Revoke authentication token",
+                    "description": "Deletes the caller's DRF token from the database, preventing discarded tokens from being replayed.",
                     "security": [{"TokenAuth": []}],
                     "responses": {"200": {"description": "Token revoked successfully"}},
                 }
@@ -1055,7 +1213,7 @@ def api_schema_view(request):
             "/auth/change-password/": {
                 "post": {
                     "tags": ["Auth"],
-                    "summary": "Change current user's password",
+                    "summary": "Change account password",
                     "security": [{"TokenAuth": []}],
                     "requestBody": {
                         "required": True,
@@ -1073,21 +1231,41 @@ def api_schema_view(request):
                             }
                         },
                     },
-                    "responses": {"200": {"description": "Password updated successfully"}},
+                    "responses": {"200": {"description": "Password updated and new token issued"}},
                 }
             },
             "/students/me/": {
                 "get": {
                     "tags": ["Students"],
                     "summary": "Get authenticated student profile",
+                    "description": "Returns profile details for the logged-in student including classroom, year, guardian contact, and face enrollment status.",
                     "security": [{"TokenAuth": []}],
                     "responses": {"200": {"description": "Student profile data"}},
                 }
             },
+            "/students/schedule/today/": {
+                "get": {
+                    "tags": ["Students"],
+                    "summary": "Get today's class schedule for student",
+                    "description": "Returns all scheduled sessions for the student's assigned classroom today, including check-in status and active QR indicator.",
+                    "security": [{"TokenAuth": []}],
+                    "responses": {"200": {"description": "List of scheduled sessions for today"}},
+                }
+            },
+            "/alerts/mine/": {
+                "get": {
+                    "tags": ["Students"],
+                    "summary": "Get student's absence alert history",
+                    "description": "Returns notification logs sent to guardian/student for absences across past sessions.",
+                    "security": [{"TokenAuth": []}],
+                    "responses": {"200": {"description": "List of alert log entries"}},
+                }
+            },
             "/attendance/checkin/qr/": {
                 "post": {
-                    "tags": ["Students"],
-                    "summary": "Check in student via scanned QR code token",
+                    "tags": ["Attendance"],
+                    "summary": "Student check-in via scanned QR token",
+                    "description": "Validates dynamic rotating QR token or static token. Determines Present vs Late based on arrival time. Enforces campus IP subnet restrictions.",
                     "security": [{"TokenAuth": []}],
                     "requestBody": {
                         "required": True,
@@ -1096,20 +1274,26 @@ def api_schema_view(request):
                                 "schema": {
                                     "type": "object",
                                     "properties": {
-                                        "qr_token": {"type": "string"},
+                                        "qr_token": {"type": "string", "example": "dyn_1_abc12345"},
                                     },
                                     "required": ["qr_token"],
                                 }
                             }
                         },
                     },
-                    "responses": {"200": {"description": "Checked in"}},
+                    "responses": {
+                        "200": {"description": "Already checked in (idempotent)"},
+                        "201": {"description": "Successfully checked in"},
+                        "400": {"description": "Expired or invalid QR token"},
+                        "403": {"description": "Campus IP restriction or unassigned student"},
+                    },
                 }
             },
             "/attendance/checkin/face/": {
                 "post": {
-                    "tags": ["Students"],
-                    "summary": "Check in via webcam face capture",
+                    "tags": ["Attendance"],
+                    "summary": "Student check-in via live camera face frame",
+                    "description": "Processes camera frame in RAM, runs 3D anti-spoofing detection, extracts 512D InsightFace embedding, and matches against classroom enrolled faces.",
                     "security": [{"TokenAuth": []}],
                     "requestBody": {
                         "required": True,
@@ -1118,38 +1302,70 @@ def api_schema_view(request):
                                 "schema": {
                                     "type": "object",
                                     "properties": {
-                                        "image": {"type": "string", "format": "binary"},
-                                        "session_id": {"type": "integer"},
+                                        "image": {"type": "string", "format": "binary", "description": "Captured camera frame image (JPEG/PNG)"},
+                                        "session_id": {"type": "integer", "description": "Optional active session ID to narrow match candidate space"},
                                     },
                                     "required": ["image"],
                                 }
                             }
                         },
                     },
-                    "responses": {"200": {"description": "Match result"}},
+                    "responses": {
+                        "200": {"description": "Match result with student info and confidence score"},
+                        "400": {"description": "Spoof detected or no face found"},
+                        "429": {"description": "Rate limit exceeded (anti-hammering cooldown)"},
+                    },
                 }
             },
             "/attendance/history/": {
                 "get": {
-                    "tags": ["Students"],
-                    "summary": "List personal attendance history records",
+                    "tags": ["Attendance"],
+                    "summary": "List student personal attendance history",
+                    "description": "Returns paginated list of past attendance records for the logged-in student.",
                     "security": [{"TokenAuth": []}],
                     "parameters": [
                         {"name": "status", "in": "query", "schema": {"type": "string", "enum": ["present", "late", "absent"]}},
                         {"name": "date_from", "in": "query", "schema": {"type": "string", "format": "date"}},
                         {"name": "date_to", "in": "query", "schema": {"type": "string", "format": "date"}},
-                        {"name": "limit", "in": "query", "schema": {"type": "integer"}},
-                        {"name": "offset", "in": "query", "schema": {"type": "integer"}},
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 20}},
+                        {"name": "offset", "in": "query", "schema": {"type": "integer", "default": 0}},
                     ],
-                    "responses": {"200": {"description": "List of attendance records"}},
+                    "responses": {"200": {"description": "Paginated attendance history records"}},
+                }
+            },
+            "/face/enroll/": {
+                "post": {
+                    "tags": ["Biometrics"],
+                    "summary": "Enroll student biometric face photos (1–5 angles)",
+                    "description": "Uploads 1 to 5 facial photos (front, left, right, up) to generate multi-angle 512D embeddings in StudentFace with privacy consent timestamp.",
+                    "security": [{"TokenAuth": []}],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "multipart/form-data": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "images": {
+                                            "type": "array",
+                                            "items": {"type": "string", "format": "binary"},
+                                            "description": "1 to 5 face image files at different angles",
+                                        },
+                                        "student_id": {"type": "string", "description": "Student ID (e.g. STU001) if enrolling on behalf of student"},
+                                    },
+                                }
+                            }
+                        },
+                    },
+                    "responses": {"201": {"description": "Face templates extracted and enrolled successfully"}},
                 }
             },
             "/teacher/classes/today/": {
                 "get": {
                     "tags": ["Teachers"],
-                    "summary": "List all sessions scheduled for today for the teacher",
+                    "summary": "List all sessions scheduled for today for teacher",
                     "security": [{"TokenAuth": []}],
-                    "responses": {"200": {"description": "List of sessions"}},
+                    "responses": {"200": {"description": "List of today's class sessions"}},
                 }
             },
             "/teacher/sessions/": {
@@ -1164,8 +1380,8 @@ def api_schema_view(request):
                                 "schema": {
                                     "type": "object",
                                     "properties": {
-                                        "class_room": {"type": "integer"},
-                                        "date": {"type": "string", "format": "date"},
+                                        "class_room": {"type": "integer", "example": 1},
+                                        "date": {"type": "string", "format": "date", "example": "2026-09-23"},
                                         "start_time": {"type": "string", "example": "08:00:00"},
                                         "end_time": {"type": "string", "example": "10:00:00"},
                                         "auto_generate_qr": {"type": "boolean", "default": True},
@@ -1176,22 +1392,68 @@ def api_schema_view(request):
                             }
                         },
                     },
-                    "responses": {"201": {"description": "Session created"}},
+                    "responses": {"201": {"description": "Session created successfully"}},
                 }
             },
             "/teacher/sessions/{session_id}/roster/": {
                 "get": {
                     "tags": ["Teachers"],
-                    "summary": "Get full student roster and live check-in statuses for a session",
+                    "summary": "Get full classroom student roster and check-in statuses",
                     "security": [{"TokenAuth": []}],
                     "parameters": [{"name": "session_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
-                    "responses": {"200": {"description": "Roster and summary"}},
+                    "responses": {"200": {"description": "Session roster breakdown and summary counts"}},
+                }
+            },
+            "/teacher/sessions/{session_id}/live-feed/": {
+                "get": {
+                    "tags": ["Teachers"],
+                    "summary": "Real-time live attendance polling feed for active session",
+                    "description": "Returns live attendance counters (present, late, absent, unmarked) and incremental check-in events (e.g. from Kiosk or mobile). Supports `?since=<ISO_TIMESTAMP>`.",
+                    "security": [{"TokenAuth": []}],
+                    "parameters": [
+                        {"name": "session_id", "in": "path", "required": True, "schema": {"type": "integer"}},
+                        {"name": "since", "in": "query", "schema": {"type": "string", "format": "date-time"}, "description": "Optional ISO timestamp to fetch only check-ins after this time"},
+                    ],
+                    "responses": {"200": {"description": "Live attendance counters and recent check-ins"}},
+                }
+            },
+            "/teacher/sessions/{session_id}/attendance/bulk/": {
+                "post": {
+                    "tags": ["Teachers"],
+                    "summary": "Bulk override attendance statuses for multiple students",
+                    "security": [{"TokenAuth": []}],
+                    "parameters": [{"name": "session_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "records": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "student_id": {"type": "string", "example": "STU001"},
+                                                    "status": {"type": "string", "enum": ["present", "late", "absent"]},
+                                                },
+                                                "required": ["student_id", "status"],
+                                            },
+                                        }
+                                    },
+                                    "required": ["records"],
+                                }
+                            }
+                        },
+                    },
+                    "responses": {"200": {"description": "Bulk attendance updated successfully"}},
                 }
             },
             "/teacher/sessions/{session_id}/qr/": {
                 "post": {
                     "tags": ["Teachers"],
-                    "summary": "Rotate / refresh session QR code",
+                    "summary": "Rotate / refresh static session QR code",
                     "security": [{"TokenAuth": []}],
                     "parameters": [{"name": "session_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
                     "requestBody": {
@@ -1204,22 +1466,43 @@ def api_schema_view(request):
                             }
                         }
                     },
-                    "responses": {"200": {"description": "New QR token"}},
+                    "responses": {"200": {"description": "New QR token generated"}},
+                }
+            },
+            "/teacher/sessions/{session_id}/qr/dynamic/": {
+                "get": {
+                    "tags": ["Teachers"],
+                    "summary": "Get current dynamic rotating QR token with countdown",
+                    "description": "Used by classroom projector screens to fetch the current rotating dynamic QR code token (rotates every 20 seconds).",
+                    "security": [{"TokenAuth": []}],
+                    "parameters": [{"name": "session_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                    "responses": {"200": {"description": "Active dynamic token and countdown remaining seconds"}},
+                }
+            },
+            "/teacher/sessions/{session_id}/live-qr/": {
+                "get": {
+                    "tags": ["Teachers"],
+                    "summary": "Fullscreen dynamic QR projector view (HTML)",
+                    "description": "Renders an auto-refreshing fullscreen QR display designed for classroom projectors. Requires staff/teacher session login.",
+                    "parameters": [{"name": "session_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                    "responses": {"200": {"description": "Projector HTML page with animated rotating QR code"}},
                 }
             },
             "/teacher/sessions/{session_id}/end/": {
                 "post": {
                     "tags": ["Teachers"],
-                    "summary": "End session and trigger automatic absence notifications",
+                    "summary": "Finalize session & trigger automatic absence notifications",
+                    "description": "Closes the class session, marks any unmarked students absent, and dispatches background Celery alerts via Telegram or Email.",
                     "security": [{"TokenAuth": []}],
                     "parameters": [{"name": "session_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
-                    "responses": {"200": {"description": "Session closed and Celery alert task dispatched"}},
+                    "responses": {"200": {"description": "Session closed and absence alert Celery tasks dispatched"}},
                 }
             },
             "/teacher/attendance/{record_id}/": {
                 "patch": {
                     "tags": ["Teachers"],
-                    "summary": "Manual override of student attendance status",
+                    "summary": "Manual single-record attendance override",
+                    "description": "Allows teachers to update attendance status (present, late, absent) or soft-delete records with audit logging.",
                     "security": [{"TokenAuth": []}],
                     "parameters": [{"name": "record_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
                     "requestBody": {
@@ -1242,10 +1525,29 @@ def api_schema_view(request):
             "/reports/class/{class_id}/": {
                 "get": {
                     "tags": ["Reports"],
-                    "summary": "Aggregated attendance metrics for a classroom",
+                    "summary": "Aggregated attendance statistics for a classroom (JSON)",
                     "security": [{"TokenAuth": []}],
                     "parameters": [{"name": "class_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
-                    "responses": {"200": {"description": "Aggregated stats"}},
+                    "responses": {"200": {"description": "Attendance percentage breakdown (present, late, absent)"}},
+                }
+            },
+            "/reports/class/{class_id}/export-csv/": {
+                "get": {
+                    "tags": ["Reports"],
+                    "summary": "Export classroom attendance report to CSV",
+                    "description": "Downloads full attendance roster records as a CSV file with session date, student ID, status, check-in method, confidence score, and timestamp.",
+                    "security": [{"TokenAuth": []}],
+                    "parameters": [
+                        {"name": "class_id", "in": "path", "required": True, "schema": {"type": "integer"}},
+                        {"name": "start_date", "in": "query", "schema": {"type": "string", "format": "date"}, "description": "Optional start date filter (YYYY-MM-DD)"},
+                        {"name": "end_date", "in": "query", "schema": {"type": "string", "format": "date"}, "description": "Optional end date filter (YYYY-MM-DD)"},
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "CSV attachment file stream",
+                            "content": {"text/csv": {"schema": {"type": "string", "format": "binary"}}},
+                        }
+                    },
                 }
             },
             "/reports/student/{student_id}/": {
@@ -1254,14 +1556,7 @@ def api_schema_view(request):
                     "summary": "Aggregated attendance stats for a student",
                     "security": [{"TokenAuth": []}],
                     "parameters": [{"name": "student_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
-                    "responses": {"200": {"description": "Student stats"}},
-                }
-            },
-            "/health/": {
-                "get": {
-                    "tags": ["System"],
-                    "summary": "System and dependency healthcheck (DB, Redis, Celery, InsightFace)",
-                    "responses": {"200": {"description": "Services health status"}},
+                    "responses": {"200": {"description": "Individual student attendance rate and status metrics"}},
                 }
             },
         },

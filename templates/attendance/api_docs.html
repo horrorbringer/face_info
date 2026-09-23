@@ -80,6 +80,12 @@
         ],
         layout: "BaseLayout",
         requestInterceptor: function(req) {
+          if (req.headers && req.headers['Authorization']) {
+            var auth = req.headers['Authorization'].trim();
+            if (!auth.startsWith('Token ') && !auth.startsWith('Bearer ')) {
+              req.headers['Authorization'] = 'Token ' + auth;
+            }
+          }
           return req;
         }
       });

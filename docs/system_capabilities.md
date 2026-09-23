@@ -83,6 +83,9 @@ Biometric enrollment can be performed via either the REST API (for mobile/extern
   - Fetches all sessions scheduled for today for the authenticated teacher.
 - **Dynamic QR Code Generation:** `POST /api/teacher/sessions/{id}/qr/`
   - Generates a cryptographically secure 32-byte token with configurable expiration minutes.
+- **Live Attendance Feed (Polling/Real-time):** `GET /api/teacher/sessions/{id}/live-feed/`
+  - Returns real-time attendance counters (`total_enrolled`, `checked_in_count`, `present_count`, `late_count`, `absent_count`, `unmarked_count`) and recent check-in events (`recent_checkins`).
+  - Supports incremental polling via `?since=<ISO_TIMESTAMP>`.
 - **Session Finalization:** `POST /api/teacher/sessions/{id}/end/`
   - Marks class closed and triggers background alerts.
 
@@ -99,30 +102,56 @@ Biometric enrollment can be performed via either the REST API (for mobile/extern
 
 ## 6. Analytics & Attendance Reports
 
-- **Classroom Report:** `GET /api/reports/class/{id}/`
+- **Classroom Report (JSON):** `GET /api/reports/class/{id}/`
   - Total enrolled students.
   - Total sessions held.
   - Present count & percentage.
   - Late count & percentage.
   - Absence count & percentage.
+- **Classroom Attendance Export (CSV):** `GET /api/reports/class/{id}/export-csv/`
+  - Downloads full attendance roster records as a CSV file (`Session Date, Classroom, Session Time, Student ID, Full Name, Status, Check-In Method, Checked In At, Confidence Score, Edited By`).
+  - Supports optional date filtering query parameters: `?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD`.
+  - Accessible by authenticated teachers and administrators.
 - **Student Report:** `GET /api/reports/student/{id}/`
   - Total recorded sessions for the student.
   - Individual attendance rate (%) and status breakdown.
 
 ---
 
-## 7. Web Portals & Administrative Tools
+## 7. Operational & Diagnostic CLI Tools
 
-- **Staff Admin Portal (`/admin/`):**
-  - Full CRUD for Teachers, Classrooms, Sessions, Students, AttendanceRecords, and AlertLogs.
-  - Built-in admin actions for bulk soft-delete and restore.
-  - CSV student import tool.
-- **Web Kiosk Scanner (`/`):**
-  - Web camera interface for staff-assisted student lookups.
+- **Telegram Bot Health & Notification Diagnostic:**
+  - Command: `python manage.py test_telegram [--chat-id <CHAT_ID>] [--token <BOT_TOKEN>]`
+  - Validates bot token with Telegram's `getMe` API.
+  - Dispatches a formatted test broadcast message with timestamp and server host details to verify webhook/outbound connectivity.
+
 
 ---
 
-## 8. Supported Client Integrations
+## 8. Web Portals & Administrative Tools (Target Audiences)
+
+The Web Portal is designed for **School Staff, Teachers, and Administrators**:
+
+1. **Gate / Entrance Kiosk Station (`/`):**
+   - **Audience:** Kiosk operators, security guards, or unattended mounted tablets at entrance doors.
+   - **Features:** Automated hands-free scanning, real-time multi-factor anti-spoofing (3D depth curvature, FFT moiré, temporal movement), interactive active challenges (blink/head turn), Web Audio melodic chime feedback with mute toggle, IP-based anti-hammering rate limiting, station/classroom filter dropdown, and instant attendance confirmation.
+2. **Student Management & Biometric Studio (`/students/`):**
+   - **Audience:** Class teachers, registrars, and enrollment officers.
+   - **Features:** 
+     - **Face Enrollment Studio (`/students/<id>/enroll/`)**: Capture 1–3 camera angles with documented privacy consent.
+     - **Manual Lookup (`/students/lookup/`)**: ID/Name search fallback when students cannot scan their face.
+     - **Biometric Revocation (`/students/<id>/revoke/`)**: GDPR/FERPA permanent biometric template deletion upon consent withdrawal.
+     - **Roster CSV Import (`/students/import/`)**: Batch upload student directories.
+3. **Staff Admin Dashboard (`/admin/`):**
+   - **Audience:** School principals, academic coordinators, and IT administrators.
+   - **Features:** 
+     - Full CRUD for Teachers, Classrooms, Schedules, Courses, and Attendance Policies.
+     - Attendance auditing, override history, and `LookupAuditLog` review for spoof attempts.
+     - Telegram Bot absence notification settings and guardian contact management.
+
+---
+
+## 9. Supported Client Integrations
 
 The system exposes clean REST endpoints consumable by:
 - **Flutter Mobile Apps** (Student & Teacher mobile clients via Token Authentication).

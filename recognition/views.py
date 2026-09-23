@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
+from django.core.cache import cache
 from django.http import JsonResponse
 from django.shortcuts import render
 from django.utils import timezone
@@ -7,9 +8,46 @@ from audits.models import LookupAuditLog
 from .services import FaceRecognitionUnavailable, best_match, process_kiosk_frame
 
 
+def check_kiosk_rate_limit(request, max_requests=45, window_secs=60):
+    """
+    Prevent camera frame hammering / CPU overload by rate-limiting frame submissions per IP.
+    Returns (is_limited, client_ip).
+    """
+    ip = request.META.get("HTTP_X_FORWARDED_FOR")
+    if ip:
+        ip = ip.split(",")[0].strip()
+    else:
+        ip = request.META.get("REMOTE_ADDR", "127.0.0.1")
+
+    cache_key = f"kiosk_rate:{ip}"
+    try:
+        current = cache.get(cache_key, 0)
+        if current >= max_requests:
+            return True, ip
+        cache.set(cache_key, current + 1, timeout=window_secs)
+    except Exception:
+        pass
+    return False, ip
+
+
 @login_required
 def kiosk(request):
+    from attendance.models import ClassRoom
     context = {"result": None}
+    try:
+        context["classrooms"] = ClassRoom.objects.all().order_by("name")
+    except Exception:
+        context["classrooms"] = []
+
+    selected_classroom_id = request.POST.get("classroom_id") or request.GET.get("classroom_id")
+    target_classroom = None
+    if selected_classroom_id:
+        try:
+            target_classroom = ClassRoom.objects.filter(id=selected_classroom_id).first()
+            context["selected_classroom_id"] = target_classroom.id if target_classroom else None
+        except Exception:
+            pass
+
     if request.method == "POST":
         image = request.FILES.get("image")
         prev_image = request.FILES.get("prev_image")
@@ -18,6 +56,14 @@ def kiosk(request):
             or "application/json" in request.headers.get("Accept", "")
             or request.POST.get("format") == "json"
         )
+
+        limited, _ = check_kiosk_rate_limit(request)
+        if limited:
+            err = "Scanning too quickly. Please pause for a moment."
+            if is_ajax:
+                return JsonResponse({"success": False, "status": "rate_limited", "error": err}, status=429)
+            context["error"] = err
+            return render(request, "recognition/kiosk.html", context, status=429)
 
         if not image:
             err = "Capture a camera frame first."
@@ -28,7 +74,10 @@ def kiosk(request):
 
         try:
             vector, model_name, liveness = process_kiosk_frame(image, prev_upload=prev_image)
-            student, score = best_match(vector)
+            student, score = best_match(vector, class_room=target_classroom)
+            if not student and target_classroom:
+                # Fallback to global match if student is enrolled in a different classroom
+                student, score = best_match(vector)
         except FaceRecognitionUnavailable as exc:
             err_msg = str(exc)
             status_code = "spoof" if "Spoof" in err_msg else "error"
@@ -56,14 +105,15 @@ def kiosk(request):
         # AUTO-CONFIRM: Verified real face & matched enrolled student
         LookupAuditLog.objects.create(staff_user=request.user, student=student, outcome="matched")
 
-        # Optional: if an active class session exists for student's classroom, mark present
+        # Optional: if an active class session exists for selected room or student's classroom, mark present
         session_recorded = False
         try:
             from attendance.models import AttendanceRecord, Session
             now = timezone.localtime()
-            if student.class_room:
+            effective_room = target_classroom if target_classroom else student.class_room
+            if effective_room:
                 session = Session.objects.filter(
-                    class_room=student.class_room,
+                    class_room=effective_room,
                     date=now.date(),
                     ended_at__isnull=True,
                 ).first()

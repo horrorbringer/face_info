@@ -9,7 +9,16 @@
         <h1 class="h3 mb-1">Face Recognition Scanner</h1>
         <p class="text-muted small mb-0">Hands-free automatic identity verification with real-time anti-spoofing detection.</p>
       </div>
-      <div class="d-flex align-items-center gap-3">
+      <div class="d-flex align-items-center gap-3 flex-wrap">
+        <div class="d-flex align-items-center gap-1">
+          <label for="kiosk-classroom-select" class="small text-muted fw-semibold text-nowrap mb-0">Station:</label>
+          <select id="kiosk-classroom-select" class="form-select form-select-sm" style="width: auto; min-width: 170px;">
+            <option value="">All Classrooms (Auto)</option>
+            {% for c in classrooms %}
+              <option value="{{ c.id }}" {% if selected_classroom_id == c.id %}selected{% endif %}>{{ c.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
         <div class="form-check form-switch fs-6 mb-0">
           <input class="form-check-input" type="checkbox" role="switch" id="challenge-toggle">
           <label class="form-check-label fw-semibold text-primary" for="challenge-toggle" title="Requires user to blink or move head to defeat video replays">
@@ -20,6 +29,10 @@
           <input class="form-check-input" type="checkbox" role="switch" id="auto-scan-toggle" checked>
           <label class="form-check-label fw-semibold" for="auto-scan-toggle">Auto-Scan</label>
         </div>
+        <button type="button" id="sound-toggle-btn" class="btn btn-sm btn-outline-secondary d-flex align-items-center gap-1 py-1 px-2" title="Toggle kiosk audio feedback">
+          <span id="sound-icon">🔊</span>
+          <span id="sound-text" class="small fw-semibold">Sound On</span>
+        </button>
       </div>
     </div>
 
@@ -151,6 +164,17 @@
   const challengePrompt = document.getElementById('challenge-prompt');
   const challengeIcon = document.getElementById('challenge-icon');
   const challengeText = document.getElementById('challenge-text');
+  const kioskRoomSelect = document.getElementById('kiosk-classroom-select');
+
+  if (kioskRoomSelect) {
+    const savedRoom = localStorage.getItem('kiosk_classroom_id');
+    if (savedRoom && !kioskRoomSelect.value) {
+      kioskRoomSelect.value = savedRoom;
+    }
+    kioskRoomSelect.addEventListener('change', () => {
+      localStorage.setItem('kiosk_classroom_id', kioskRoomSelect.value);
+    });
+  }
 
   let stream = null;
   let isScanning = false;
@@ -191,8 +215,42 @@
     }
   }
 
+  // Sound Toggle & Web Audio state
+  const soundToggleBtn = document.getElementById('sound-toggle-btn');
+  const soundIcon = document.getElementById('sound-icon');
+  const soundText = document.getElementById('sound-text');
+  let soundEnabled = localStorage.getItem('kiosk_sound_enabled') !== 'false';
+
+  function updateSoundBtnUI() {
+    if (!soundToggleBtn) return;
+    if (soundEnabled) {
+      soundIcon.textContent = '🔊';
+      soundText.textContent = 'Sound On';
+      soundToggleBtn.classList.remove('btn-outline-danger');
+      soundToggleBtn.classList.add('btn-outline-secondary');
+    } else {
+      soundIcon.textContent = '🔇';
+      soundText.textContent = 'Muted';
+      soundToggleBtn.classList.remove('btn-outline-secondary');
+      soundToggleBtn.classList.add('btn-outline-danger');
+    }
+  }
+  updateSoundBtnUI();
+
+  if (soundToggleBtn) {
+    soundToggleBtn.addEventListener('click', () => {
+      soundEnabled = !soundEnabled;
+      localStorage.setItem('kiosk_sound_enabled', soundEnabled ? 'true' : 'false');
+      updateSoundBtnUI();
+      if (soundEnabled) {
+        playAudioFeedback('success');
+      }
+    });
+  }
+
   // Web Audio chime feedback
   function playAudioFeedback(type) {
+    if (!soundEnabled) return;
     try {
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
       const osc = ctx.createOscillator();
@@ -285,75 +343,7 @@
       const ctx = canvas.getContext('2d');
       ctx.drawImage(video, 0, 0);
 
-      // 4. Client-side physiological motion + rigid-body analysis
-      // A phone/tablet held in hand moves as a RIGID BODY (uniform motion from hand tremor).
-      // A real face exhibits NON-RIGID physiological motion (varied per-region micro-movement).
-      // We divide the face crop into a 3×2 grid and compare per-region motion patterns.
-      const cropW = Math.floor(video.videoWidth * 0.35);
-      const cropH = Math.floor(video.videoHeight * 0.45);
-      const sx = Math.floor((video.videoWidth - cropW) / 2);
-      const sy = Math.floor((video.videoHeight - cropH) / 2);
-
-      const d1 = ctxPrev.getImageData(sx, sy, cropW, cropH).data;
-      const d2 = ctx.getImageData(sx, sy, cropW, cropH).data;
-
-      // Compute per-region motion across a 3×2 grid
-      const gridRows = 3, gridCols = 2;
-      const cellW = Math.floor(cropW / gridCols);
-      const cellH = Math.floor(cropH / gridRows);
-      const regionDiffs = new Array(gridRows * gridCols).fill(0);
-      const regionCounts = new Array(gridRows * gridCols).fill(0);
-
-      for (let y = 0; y < cropH; y += 4) {
-        const gr = Math.min(Math.floor(y / cellH), gridRows - 1);
-        for (let x = 0; x < cropW; x += 4) {
-          const gc = Math.min(Math.floor(x / cellW), gridCols - 1);
-          const idx = (y * cropW + x) * 4;
-          if (idx + 2 < d1.length) {
-            const g1 = (d1[idx] + d1[idx+1] + d1[idx+2]) / 3;
-            const g2 = (d2[idx] + d2[idx+1] + d2[idx+2]) / 3;
-            regionDiffs[gr * gridCols + gc] += Math.abs(g1 - g2);
-            regionCounts[gr * gridCols + gc]++;
-          }
-        }
-      }
-
-      const regionMotions = [];
-      for (let ri = 0; ri < regionDiffs.length; ri++) {
-        if (regionCounts[ri] > 0) regionMotions.push(regionDiffs[ri] / regionCounts[ri]);
-      }
-
-      // Overall average motion across all regions
-      const motionScore = regionMotions.length > 0
-        ? regionMotions.reduce((a, b) => a + b, 0) / regionMotions.length
-        : 2.0;
-
-      // Rigidity detection via coefficient of variation (CV) of per-region motion
-      // Rigid body (phone/screen): all regions move the same → CV < 0.18
-      // Live face: breathing, micro-saccades, muscle tone → varied motion → CV > 0.20
-      let isRigidBody = false;
-      if (regionMotions.length >= 4 && motionScore > 0.3) {
-        const rMean = regionMotions.reduce((a, b) => a + b, 0) / regionMotions.length;
-        const rVar = regionMotions.reduce((a, b) => a + Math.pow(b - rMean, 2), 0) / regionMotions.length;
-        const motionCV = rMean > 0.1 ? Math.sqrt(rVar) / rMean : 0;
-        if (motionCV < 0.18) {
-          isRigidBody = true;
-        }
-      }
-
-      // BLOCK: No motion (printed/static photo) OR rigid-body motion (phone/screen held up)
-      if (motionScore < 1.0 || isRigidBody) {
-        scanline.classList.add('d-none');
-        reticle.style.borderColor = 'white';
-        playAudioFeedback('spoof');
-        if (isRigidBody) {
-          showSpoofWarning("Phone or screen detected — rigid object motion. Only real live faces are accepted.");
-        } else {
-          showSpoofWarning("Static photo detected. No natural movement found. Please present a real live face.");
-        }
-        return;
-      }
-
+      // Send frames to backend for multi-factor biometric liveness verification
       canvas.toBlob(blobCurr => {
         if (!blobCurr) {
           isScanning = false;
@@ -365,6 +355,7 @@
           const formData = new FormData();
           formData.append('image', blobCurr, 'scan.jpg');
           if (blobPrev) formData.append('prev_image', blobPrev, 'prev.jpg');
+          if (kioskRoomSelect && kioskRoomSelect.value) formData.append('classroom_id', kioskRoomSelect.value);
           formData.append('format', 'json');
 
           fetch('/', {
@@ -418,6 +409,15 @@
           // SPOOF: Screen or Paper Photo Detected
           playAudioFeedback('spoof');
           showSpoofWarning(data.error);
+        } else if (data.status === 'rate_limited') {
+          // Server rate limit / cooldown
+          statusBadge.className = 'badge bg-warning text-dark px-3 py-2 shadow-sm fs-6';
+          statusBadge.textContent = '⏳ Cooldown... Scanning paused';
+          setTimeout(() => {
+            statusBadge.className = 'badge bg-success px-3 py-2 shadow-sm fs-6';
+            statusBadge.textContent = '🟢 Camera Ready';
+            isScanning = false;
+          }, 2000);
         } else if (data.status === 'no_match') {
           // Real face but no enrolled match
           statusBadge.className = 'badge bg-warning text-dark px-3 py-2 shadow-sm fs-6';

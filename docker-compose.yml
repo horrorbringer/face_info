@@ -23,6 +23,13 @@ services:
       - "8000:8000"
     volumes:
       - ${FACE_MODEL_PATH:-./staticfiles}:${FACE_MODEL_PATH:-/tmp/nomodel}:ro
+      - ./templates:/app/templates
+      - ./attendance:/app/attendance
+      - ./recognition:/app/recognition
+      - ./students:/app/students
+      - ./audits:/app/audits
+      - ./config:/app/config
+      - ./docs:/app/docs
     depends_on:
       - db
       - redis
@@ -37,6 +44,13 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/0
     volumes:
       - ${FACE_MODEL_PATH:-./staticfiles}:${FACE_MODEL_PATH:-/tmp/nomodel}:ro
+      - ./templates:/app/templates
+      - ./attendance:/app/attendance
+      - ./recognition:/app/recognition
+      - ./students:/app/students
+      - ./audits:/app/audits
+      - ./config:/app/config
+      - ./docs:/app/docs
     depends_on:
       - db
       - redis

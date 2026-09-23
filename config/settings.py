@@ -87,6 +87,7 @@ ATTENDANCE_ALLOWED_SUBNETS = [s.strip() for s in raw_subnets.split(",") if s.str
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
+        "attendance.security.FlexibleTokenAuthentication",
         "rest_framework.authentication.TokenAuthentication",
         "rest_framework.authentication.SessionAuthentication",
     ],
