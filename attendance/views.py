@@ -162,7 +162,7 @@ class StudentTodayScheduleView(APIView):
         schedule_data = []
         for s in sessions:
             rec = record_map.get(s.id)
-            is_cancelled = s.qr_token == "CANCELLED"
+            is_cancelled = s.is_cancelled_or_inactive
             is_qr_active = bool(
                 s.qr_token
                 and s.qr_token_expires_at
@@ -327,14 +327,9 @@ class QRCheckInView(APIView):
                 }, status=status.HTTP_409_CONFLICT)
             cache.set(device_cache_key, student.id, timeout=43200)
 
-        # Calculate late vs present based on session start_time + threshold (with late-teacher grace period)
+        # Calculate late vs present based on session actual started_at (or scheduled start_time) + threshold
         late_threshold_mins = getattr(settings, "LATE_THRESHOLD_MINUTES", 15)
-        effective_start = session_start_datetime
-        if session.qr_token_expires_at:
-            approx_activation = session.qr_token_expires_at - datetime.timedelta(minutes=30)
-            if approx_activation > session_start_datetime:
-                effective_start = approx_activation
-
+        effective_start = session.started_at or session_start_datetime
         late_cutoff = effective_start + datetime.timedelta(minutes=late_threshold_mins)
         record_status = "late" if now > late_cutoff else "present"
 
@@ -346,6 +341,7 @@ class QRCheckInView(APIView):
                     defaults={
                         "status": record_status,
                         "method": "qr",
+                        "checked_in_at": now,
                         "is_deleted": False,
                     }
                 )
@@ -405,7 +401,7 @@ class StudentAttendanceHistoryView(APIView):
             return Response({"error": "No student profile found."}, status=status.HTTP_404_NOT_FOUND)
         student = request.user.student_profile
         records = (
-            AttendanceRecord.objects.filter(student=student, is_deleted=False)
+            AttendanceRecord.objects.filter(student=student, is_deleted=False, session__is_cancelled=False)
             .exclude(session__qr_token="CANCELLED")
             .select_related("session", "session__class_room")
             .order_by("-session__date", "-session__start_time")
@@ -447,7 +443,7 @@ class StudentAttendanceHistoryView(APIView):
 def is_authorized_teacher_or_staff(user, classroom=None):
     """
     Validates that the authenticated user is either a Django staff/admin
-    or an assigned Teacher. If classroom is provided, verifies ownership.
+    or an assigned primary or co-Teacher. If classroom is provided, verifies ownership.
     Explicitly rejects students and non-assigned teachers.
     """
     if not user or not user.is_authenticated:
@@ -457,14 +453,17 @@ def is_authorized_teacher_or_staff(user, classroom=None):
     if hasattr(user, "teacher_profile"):
         if classroom is None:
             return True
-        return classroom.teacher_id is not None and classroom.teacher_id == user.teacher_profile.id
+        t_id = user.teacher_profile.id
+        if classroom.teacher_id == t_id:
+            return True
+        return classroom.co_teachers.filter(id=t_id).exists()
     return False
 
 
 class TeacherTodayClassesView(APIView):
     """
     GET /api/teacher/classes/today/
-    Returns all sessions for today for the authenticated teacher.
+    Returns all sessions for today for the authenticated teacher (primary or co-teacher).
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -476,9 +475,10 @@ class TeacherTodayClassesView(APIView):
             )
 
         today = timezone.localdate()
-        sessions_qs = Session.objects.filter(date=today).select_related("class_room")
+        sessions_qs = Session.objects.filter(date=today, is_cancelled=False).select_related("class_room")
         if not request.user.is_staff:
-            sessions_qs = sessions_qs.filter(class_room__teacher=request.user.teacher_profile)
+            t = request.user.teacher_profile
+            sessions_qs = sessions_qs.filter(Q(class_room__teacher=t) | Q(class_room__co_teachers=t)).distinct()
         sessions = list(sessions_qs)
 
         from .tasks import sync_sessions_lifecycle
@@ -508,9 +508,11 @@ class TeacherClassRoomListCreateView(APIView):
 
         teacher_profile = getattr(request.user, "teacher_profile", None)
         if teacher_profile and request.query_params.get("all") != "true":
-            classrooms = ClassRoom.objects.filter(teacher=teacher_profile).select_related("teacher").order_by("name")
+            classrooms = ClassRoom.objects.filter(
+                Q(teacher=teacher_profile) | Q(co_teachers=teacher_profile)
+            ).distinct().select_related("teacher").prefetch_related("co_teachers").order_by("name")
         else:
-            classrooms = ClassRoom.objects.all().select_related("teacher").order_by("name")
+            classrooms = ClassRoom.objects.all().select_related("teacher").prefetch_related("co_teachers").order_by("name")
 
         serializer = ClassRoomSerializer(classrooms, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -646,15 +648,21 @@ class SessionRotateQRView(APIView):
             return Response({"error": "Not authorized to manage this session.", "code": "UNAUTHORIZED"}, status=status.HTTP_403_FORBIDDEN)
 
         expiry_minutes = int(request.data.get("expiry_minutes", 10))
+        now = timezone.now()
         session.qr_token = secrets.token_urlsafe(32)
-        session.qr_token_expires_at = timezone.now() + datetime.timedelta(minutes=expiry_minutes)
-        session.save(update_fields=["qr_token", "qr_token_expires_at"])
+        session.qr_token_expires_at = now + datetime.timedelta(minutes=expiry_minutes)
+        update_fields = ["qr_token", "qr_token_expires_at"]
+        if not session.started_at:
+            session.started_at = now
+            update_fields.append("started_at")
+        session.save(update_fields=update_fields)
 
         return Response({
             "session_id": session.id,
             "qr_token": session.qr_token,
             "qr_token_expires_at": session.qr_token_expires_at,
             "expires_in_minutes": expiry_minutes,
+            "started_at": session.started_at,
         })
 
 
@@ -673,6 +681,10 @@ class SessionDynamicQRView(APIView):
 
         if session.ended_at:
             return Response({"error": "This session has already ended.", "code": "SESSION_ENDED"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not session.started_at:
+            session.started_at = timezone.now()
+            session.save(update_fields=["started_at"])
 
         info = get_dynamic_qr_info(session.id)
         info["class_room"] = session.class_room.name
@@ -697,6 +709,10 @@ def session_live_qr(request, session_id):
     if not is_authorized_teacher_or_staff(request.user, session.class_room):
         from django.core.exceptions import PermissionDenied
         raise PermissionDenied("Not authorized to display QR for this session.")
+
+    if not session.started_at:
+        session.started_at = timezone.now()
+        session.save(update_fields=["started_at"])
 
     return render(request, "attendance/live_qr.html", {
         "session": session,
@@ -855,6 +871,7 @@ class TeacherSessionCreateView(APIView):
             date=target_date,
             start_time__lt=end_time,
             end_time__gt=start_time,
+            is_cancelled=False,
         ).exclude(qr_token="CANCELLED").first()
 
         if overlapping_classroom:
@@ -867,12 +884,14 @@ class TeacherSessionCreateView(APIView):
             }, status=status.HTTP_409_CONFLICT)
 
         # Check for teacher scheduling overlap in another classroom
-        if classroom.teacher:
+        assigned_teacher = classroom.teacher or getattr(request.user, "teacher_profile", None)
+        if assigned_teacher:
             overlapping_teacher = Session.objects.filter(
-                class_room__teacher=classroom.teacher,
+                Q(class_room__teacher=assigned_teacher) | Q(class_room__co_teachers=assigned_teacher),
                 date=target_date,
                 start_time__lt=end_time,
                 end_time__gt=start_time,
+                is_cancelled=False,
             ).exclude(qr_token="CANCELLED").exclude(class_room=classroom).first()
 
             if overlapping_teacher:
@@ -1325,13 +1344,9 @@ class FaceCheckInView(APIView):
                     }, status=status.HTTP_409_CONFLICT)
                 cache.set(device_cache_key, best_student.id, timeout=43200)
 
+            # Calculate late vs present based on session actual started_at (or scheduled start_time) + threshold
             late_threshold_mins = getattr(settings, "LATE_THRESHOLD_MINUTES", 15)
-            effective_start = session_start_datetime
-            if session.qr_token_expires_at:
-                approx_activation = session.qr_token_expires_at - datetime.timedelta(minutes=30)
-                if approx_activation > session_start_datetime:
-                    effective_start = approx_activation
-
+            effective_start = session.started_at or session_start_datetime
             late_cutoff = effective_start + datetime.timedelta(minutes=late_threshold_mins)
             record_status = "late" if now > late_cutoff else "present"
 
@@ -1343,6 +1358,7 @@ class FaceCheckInView(APIView):
                         defaults={
                             "status": record_status,
                             "method": "face",
+                            "checked_in_at": now,
                             "confidence_score": round(best_score, 4),
                             "is_deleted": False,
                         }
@@ -1411,12 +1427,17 @@ class ClassReportView(APIView):
         total_students = classroom.get_enrolled_students(active_only=True).count()
 
         today = timezone.localdate()
-        conducted_sessions_q = (Q(date__lt=today) | Q(date=today, start_time__lte=timezone.localtime().time())) & ~Q(qr_token="CANCELLED")
+        conducted_sessions_q = (
+            (Q(date__lt=today) | Q(date=today, start_time__lte=timezone.localtime().time()))
+            & Q(is_cancelled=False)
+            & ~Q(qr_token="CANCELLED")
+        )
         total_sessions = classroom.sessions.filter(conducted_sessions_q).count()
 
         records = AttendanceRecord.objects.filter(
             session__class_room=classroom,
-            is_deleted=False
+            is_deleted=False,
+            session__is_cancelled=False,
         ).exclude(session__qr_token="CANCELLED").filter(
             session__date__lte=today
         )
@@ -1466,7 +1487,7 @@ class ClassReportExportCSVView(APIView):
 
         records = (
             AttendanceRecord.objects.select_related("student", "session")
-            .filter(session__class_room=classroom, is_deleted=False)
+            .filter(session__class_room=classroom, is_deleted=False, session__is_cancelled=False)
             .exclude(session__qr_token="CANCELLED")
             .order_by("-session__date", "-session__start_time", "student__student_id")
         )
@@ -1536,7 +1557,9 @@ class StudentReportView(APIView):
         teacher_profile = getattr(request.user, "teacher_profile", None)
         is_class_teacher = (
             teacher_profile is not None
-            and student.get_enrolled_classrooms().filter(teacher=teacher_profile).exists()
+            and student.get_enrolled_classrooms().filter(
+                Q(teacher=teacher_profile) | Q(co_teachers=teacher_profile)
+            ).exists()
         )
         if not (request.user.is_staff or is_self or is_class_teacher):
             return Response({"error": "Not authorized to view this student's report.", "code": "UNAUTHORIZED"}, status=status.HTTP_403_FORBIDDEN)
@@ -1544,7 +1567,8 @@ class StudentReportView(APIView):
         today = timezone.localdate()
         records = AttendanceRecord.objects.filter(
             student=student,
-            is_deleted=False
+            is_deleted=False,
+            session__is_cancelled=False,
         ).exclude(session__qr_token="CANCELLED").filter(
             session__date__lte=today
         )

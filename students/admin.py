@@ -4,8 +4,8 @@ from .models import FaceEmbedding, Student
 
 @admin.register(Student)
 class StudentAdmin(admin.ModelAdmin):
-    list_display = ("student_id", "full_name", "get_classes_display", "guardian_contact", "is_active", "consent_given_at")
-    search_fields = ("student_id", "full_name", "guardian_contact")
+    list_display = ("student_id", "full_name", "get_classes_display", "guardian_contact", "guardian_email", "guardian_phone", "guardian_telegram_id", "is_active", "consent_given_at")
+    search_fields = ("student_id", "full_name", "guardian_contact", "guardian_email", "guardian_phone", "guardian_telegram_id")
     list_filter = ("is_active", "classrooms", "class_year")
     filter_horizontal = ("classrooms",)
 

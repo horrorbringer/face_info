@@ -10,15 +10,21 @@ class TeacherAdmin(admin.ModelAdmin):
 
 @admin.register(ClassRoom)
 class ClassRoomAdmin(admin.ModelAdmin):
-    list_display = ("name", "teacher")
-    search_fields = ("name",)
+    list_display = ("name", "room", "teacher", "get_co_teachers_display")
+    search_fields = ("name", "room")
     list_filter = ("teacher",)
+    filter_horizontal = ("co_teachers",)
+
+    @admin.display(description="Co-Teachers")
+    def get_co_teachers_display(self, obj):
+        names = [t.name for t in obj.co_teachers.all()]
+        return ", ".join(names) if names else "None"
 
 
 @admin.register(Session)
 class SessionAdmin(admin.ModelAdmin):
-    list_display = ("class_room", "date", "start_time", "end_time", "qr_token", "qr_token_expires_at", "ended_at")
-    list_filter = ("class_room", "date")
+    list_display = ("class_room", "date", "start_time", "end_time", "started_at", "ended_at", "is_cancelled")
+    list_filter = ("is_cancelled", "class_room", "date")
     search_fields = ("class_room__name", "qr_token")
 
 

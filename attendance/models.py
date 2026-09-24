@@ -23,6 +23,7 @@ class ClassRoom(models.Model):
     name = models.CharField(max_length=100)
     room = models.CharField(max_length=50, blank=True, default="", help_text="Physical room/lab identifier, e.g. Room 204 or Lab B")
     teacher = models.ForeignKey(Teacher, on_delete=models.SET_NULL, null=True, blank=True, related_name="classrooms")
+    co_teachers = models.ManyToManyField(Teacher, blank=True, related_name="assistant_classrooms", help_text="Assistant or co-teachers authorized to manage this classroom.")
 
     def __str__(self):
         if self.room:
@@ -44,6 +45,7 @@ class Session(models.Model):
     date = models.DateField(db_index=True)
     start_time = models.TimeField()
     end_time = models.TimeField()
+    started_at = models.DateTimeField(null=True, blank=True, db_index=True, help_text="Timestamp when session was activated/started.")
     qr_token = models.CharField(max_length=128, unique=True, null=True, blank=True)
     qr_token_expires_at = models.DateTimeField(null=True, blank=True)
     ended_at = models.DateTimeField(null=True, blank=True, db_index=True)
@@ -66,13 +68,18 @@ class Session(models.Model):
 
 class AttendanceRecord(models.Model):
     STATUS_CHOICES = [("present", "Present"), ("late", "Late"), ("absent", "Absent")]
-    METHOD_CHOICES = [("qr", "QR Code"), ("face", "Face Recognition"), ("manual", "Manual")]
+    METHOD_CHOICES = [
+        ("qr", "QR Code"),
+        ("face", "Face Recognition"),
+        ("manual", "Manual"),
+        ("system", "System / Auto"),
+    ]
 
     student = models.ForeignKey("students.Student", on_delete=models.CASCADE, related_name="attendance_records")
     session = models.ForeignKey(Session, on_delete=models.CASCADE, related_name="attendance_records")
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, db_index=True)
-    method = models.CharField(max_length=10, choices=METHOD_CHOICES)
-    checked_in_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    method = models.CharField(max_length=10, choices=METHOD_CHOICES, default="manual")
+    checked_in_at = models.DateTimeField(null=True, blank=True, db_index=True)
     confidence_score = models.FloatField(null=True, blank=True)
     is_deleted = models.BooleanField(default=False, db_index=True)
     edited_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
@@ -84,6 +91,14 @@ class AttendanceRecord(models.Model):
             models.Index(fields=["session", "status", "is_deleted"]),
             models.Index(fields=["student", "checked_in_at"]),
         ]
+
+    def save(self, *args, **kwargs):
+        from django.utils import timezone
+        if self.status in ("present", "late") and not self.checked_in_at:
+            self.checked_in_at = timezone.now()
+        elif self.status == "absent" and "checked_in_at" not in kwargs.get("update_fields", []):
+            self.checked_in_at = None
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.student} - {self.session}: {self.status}"

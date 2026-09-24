@@ -9,6 +9,9 @@ class Student(models.Model):
     class_room = models.ForeignKey("attendance.ClassRoom", on_delete=models.SET_NULL, null=True, blank=True, related_name="primary_students")
     classrooms = models.ManyToManyField("attendance.ClassRoom", blank=True, related_name="students")
     guardian_contact = models.CharField(max_length=100, blank=True)
+    guardian_email = models.EmailField(blank=True, default="", verbose_name="Guardian Email")
+    guardian_phone = models.CharField(max_length=32, blank=True, default="", verbose_name="Guardian Phone")
+    guardian_telegram_id = models.CharField(max_length=64, blank=True, default="", verbose_name="Guardian Telegram ID")
     class_year = models.CharField(max_length=128, blank=True)
     is_active = models.BooleanField(default=True)
     consent_given_at = models.DateTimeField(null=True, blank=True)
@@ -24,6 +27,19 @@ class Student(models.Model):
 
     def __str__(self):
         return f"{self.student_id} — {self.full_name}"
+
+    def save(self, *args, **kwargs):
+        c = (self.guardian_contact or "").strip()
+        if c:
+            if "@" in c and not self.guardian_email:
+                self.guardian_email = c
+            elif c.lstrip("-").isdigit() and not self.guardian_telegram_id:
+                self.guardian_telegram_id = c
+        elif self.guardian_email and not self.guardian_contact:
+            self.guardian_contact = self.guardian_email
+        elif self.guardian_telegram_id and not self.guardian_contact:
+            self.guardian_contact = self.guardian_telegram_id
+        super().save(*args, **kwargs)
 
     def get_enrolled_classrooms(self):
         """Returns all classrooms the student belongs to (both ManyToMany and primary)."""
@@ -42,14 +58,18 @@ class Student(models.Model):
         return self.classrooms.filter(id=c_id).exists()
 
     @property
-    def guardian_email(self):
-        """Returns valid email address from guardian contact, or None."""
+    def effective_guardian_email(self):
+        """Returns valid email address from guardian_email or guardian_contact, or None."""
+        if self.guardian_email:
+            return self.guardian_email.strip()
         c = (self.guardian_contact or "").strip()
         return c if "@" in c else None
 
     @property
-    def guardian_telegram_id(self):
-        """Returns numeric Telegram chat_id from guardian contact, or None."""
+    def effective_guardian_telegram_id(self):
+        """Returns numeric Telegram chat_id from guardian_telegram_id or guardian_contact, or None."""
+        if self.guardian_telegram_id:
+            return self.guardian_telegram_id.strip()
         c = (self.guardian_contact or "").strip()
         return c if c.lstrip("-").isdigit() else None
 

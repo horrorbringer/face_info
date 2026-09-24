@@ -29,22 +29,26 @@ class TeacherSerializer(serializers.ModelSerializer):
 
 class ClassRoomSerializer(serializers.ModelSerializer):
     teacher = TeacherSerializer(read_only=True)
+    co_teachers = TeacherSerializer(many=True, read_only=True)
 
     class Meta:
         model = ClassRoom
-        fields = ["id", "name", "room", "teacher"]
+        fields = ["id", "name", "room", "teacher", "co_teachers"]
 
 
 class StudentProfileSerializer(serializers.ModelSerializer):
     class_room = ClassRoomSerializer(read_only=True)
     classrooms = serializers.SerializerMethodField()
     face_embeddings_count = serializers.SerializerMethodField()
+    guardian_email = serializers.CharField(source="effective_guardian_email", read_only=True)
+    guardian_telegram_id = serializers.CharField(source="effective_guardian_telegram_id", read_only=True)
 
     class Meta:
         model = Student
         fields = [
             "id", "student_id", "full_name", "name", "class_year",
-            "is_active", "guardian_contact", "class_room", "classrooms", "face_embeddings_count",
+            "is_active", "guardian_contact", "guardian_email", "guardian_phone", "guardian_telegram_id",
+            "class_room", "classrooms", "face_embeddings_count",
             "consent_given_at"
         ]
 
@@ -65,7 +69,7 @@ class SessionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Session
         fields = [
-            "id", "class_room", "date", "start_time", "end_time",
+            "id", "class_room", "date", "start_time", "end_time", "started_at",
             "qr_token", "qr_token_expires_at", "ended_at", "is_ended", "is_qr_valid", "is_cancelled"
         ]
 
@@ -73,10 +77,10 @@ class SessionSerializer(serializers.ModelSerializer):
         return obj.ended_at is not None
 
     def get_is_cancelled(self, obj):
-        return obj.qr_token == "CANCELLED"
+        return obj.is_cancelled_or_inactive
 
     def get_is_qr_valid(self, obj):
-        if not obj.qr_token or not obj.qr_token_expires_at or obj.qr_token == "CANCELLED":
+        if not obj.qr_token or not obj.qr_token_expires_at or obj.is_cancelled_or_inactive:
             return False
         from django.utils import timezone
         return timezone.now() < obj.qr_token_expires_at

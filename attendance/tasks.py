@@ -62,7 +62,7 @@ def send_absence_alerts_for_session(self, session_id):
         logger.error(f"Session with id {session_id} not found.")
         return {"error": "Session not found"}
 
-    if session.qr_token == "CANCELLED":
+    if session.is_cancelled_or_inactive:
         logger.info(f"Skipping absence alerts for cancelled session {session_id}.")
         return {"cancelled": True, "message": "Session was cancelled"}
 
@@ -78,7 +78,7 @@ def send_absence_alerts_for_session(self, session_id):
         record, created = AttendanceRecord.objects.get_or_create(
             student=student,
             session=session,
-            defaults={"status": "absent", "method": "manual"}
+            defaults={"status": "absent", "method": "system", "checked_in_at": None}
         )
 
         # Only alert for absent students
@@ -103,8 +103,8 @@ def send_absence_alerts_for_session(self, session_id):
         )
 
         # Determine notification channel: Telegram chat_id or Email
-        tg_id = student.guardian_telegram_id
-        email_addr = student.guardian_email
+        tg_id = student.effective_guardian_telegram_id
+        email_addr = student.effective_guardian_email
 
         if tg_id:
             # Valid numerical chat_id (e.g. 584930192 or -100123456789)
@@ -187,7 +187,7 @@ def sync_sessions_lifecycle(session_qs=None):
 
     for s in session_qs:
         # Skip cancelled sessions
-        if s.qr_token == "CANCELLED":
+        if s.is_cancelled_or_inactive:
             continue
 
         s_end_dt = timezone.make_aware(
@@ -225,7 +225,11 @@ def sync_sessions_lifecycle(session_qs=None):
                 if not s.qr_token or not s.qr_token_expires_at or s.qr_token_expires_at < now:
                     s.qr_token = secrets.token_urlsafe(32)
                     s.qr_token_expires_at = s_end_dt
-                    s.save(update_fields=["qr_token", "qr_token_expires_at"])
+                    update_fields = ["qr_token", "qr_token_expires_at"]
+                    if not s.started_at:
+                        s.started_at = now
+                        update_fields.append("started_at")
+                    s.save(update_fields=update_fields)
                     started_count += 1
                     logger.info(f"Auto-started session {s.id} ({s.class_room.name}) with QR validity until {s.end_time}.")
 

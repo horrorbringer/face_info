@@ -600,3 +600,76 @@ class SmartAttendanceTests(TestCase):
         self.student.refresh_from_db()
         self.assertFalse(self.student.is_enrolled_in(new_class))
 
+    def test_co_teacher_authorization_and_today_classes(self):
+        # Create a co-teacher
+        co_user = User.objects.create_user(username="coteacher", password="password123")
+        co_teacher = Teacher.objects.create(user=co_user, name="Co Teacher", email="coteacher@test.com")
+        self.classroom.co_teachers.add(co_teacher)
+
+        # Authenticate as co-teacher
+        self.client.force_authenticate(user=co_user)
+
+        # 1. Co-teacher can view classrooms
+        rooms_resp = self.client.get("/api/teacher/classrooms/")
+        self.assertEqual(rooms_resp.status_code, status.HTTP_200_OK)
+        room_ids = [r["id"] for r in rooms_resp.data]
+        self.assertIn(self.classroom.id, room_ids)
+
+        # 2. Co-teacher can view today's classes
+        today_resp = self.client.get("/api/teacher/classes/today/")
+        self.assertEqual(today_resp.status_code, status.HTTP_200_OK)
+        session_ids = [s["id"] for s in today_resp.data]
+        self.assertIn(self.session.id, session_ids)
+
+        # 3. Co-teacher can view session roster
+        roster_resp = self.client.get(f"/api/teacher/sessions/{self.session.id}/roster/")
+        self.assertEqual(roster_resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(roster_resp.data["session_id"], self.session.id)
+
+    def test_attendance_record_data_integrity_and_absent_checked_in_at(self):
+        # 1. Absent record should have checked_in_at = None and accept method="system"
+        absent_rec = AttendanceRecord.objects.create(
+            student=self.student,
+            session=self.session,
+            status="absent",
+            method="system",
+        )
+        self.assertIsNone(absent_rec.checked_in_at)
+        self.assertEqual(absent_rec.method, "system")
+
+        # 2. When updated to present, checked_in_at is automatically assigned
+        absent_rec.status = "present"
+        absent_rec.save()
+        self.assertIsNotNone(absent_rec.checked_in_at)
+
+    def test_session_started_at_and_late_calculation(self):
+        self.client.force_authenticate(user=self.teacher_user)
+        # 1. Rotating QR code initializes started_at
+        self.assertIsNone(self.session.started_at)
+        rotate_resp = self.client.post(f"/api/teacher/sessions/{self.session.id}/qr/", {"expiry_minutes": 10})
+        self.assertEqual(rotate_resp.status_code, status.HTTP_200_OK)
+        self.session.refresh_from_db()
+        self.assertIsNotNone(self.session.started_at)
+        self.assertIsNotNone(rotate_resp.data["started_at"])
+
+    def test_student_guardian_contact_fields_and_properties(self):
+        # Test explicit fields and automatic fallback properties
+        st = Student.objects.create(
+            student_id="STU_CONTACT",
+            full_name="Contact Test Student",
+            guardian_email="parent@domain.com",
+            guardian_phone="+1234567890",
+            guardian_telegram_id="987654321",
+        )
+        self.assertEqual(st.effective_guardian_email, "parent@domain.com")
+        self.assertEqual(st.effective_guardian_telegram_id, "987654321")
+
+        # Test legacy guardian_contact backward compatibility
+        st_legacy = Student.objects.create(
+            student_id="STU_LEGACY",
+            full_name="Legacy Contact Student",
+            guardian_contact="legacy_parent@school.com",
+        )
+        self.assertEqual(st_legacy.effective_guardian_email, "legacy_parent@school.com")
+        self.assertEqual(st_legacy.guardian_email, "legacy_parent@school.com")
+
