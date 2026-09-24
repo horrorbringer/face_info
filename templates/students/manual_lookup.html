@@ -42,7 +42,7 @@
       {% for student in students %}
         <a href="{% url 'students:enroll' student.student_id %}" class="fi-student-card" style="animation: fi-slide-in 0.3s ease-out;">
           <div class="fi-student-avatar">
-            {{ student.full_name|truncatechars:1|upper }}
+            {{ student.full_name|slice:":1"|upper }}
           </div>
           <div class="flex-grow-1 min-w-0">
             <div class="d-flex align-items-center gap-2 flex-wrap">

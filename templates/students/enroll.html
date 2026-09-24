@@ -11,7 +11,7 @@
       <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
         <div class="d-flex align-items-start gap-3">
           <div class="fi-student-avatar" style="width: 56px; height: 56px; font-size: 1.3rem;">
-            {{ student.full_name|truncatechars:2|upper|truncatechars:1 }}{{ student.full_name|cut:" "|truncatechars:1|upper }}
+            {{ student.full_name|slice:":2"|upper }}
           </div>
           <div>
             <div class="d-flex align-items-center gap-2 flex-wrap mb-1">

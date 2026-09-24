@@ -392,6 +392,11 @@ sudo nano /etc/nginx/sites-available/face_info
 Paste the following configuration (replace `student-attendance.vanny.monster` with your domain):
 
 ```nginx
+upstream faceinfo_backend {
+    server 127.0.0.1:8000;
+    keepalive 32;
+}
+
 server {
     listen 80;
     server_name student-attendance.vanny.monster;
@@ -407,13 +412,17 @@ server {
     }
 
     location / {
-        proxy_pass http://127.0.0.1:8000;
+        proxy_pass http://faceinfo_backend;
         proxy_http_version 1.1;
         proxy_set_header Connection "";
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Transparently retry on backend connection drops/resets to avoid 502 Bad Gateway
+        proxy_next_upstream error timeout invalid_header http_502 http_503 http_504;
+        proxy_next_upstream_tries 3;
 
         # Timeouts: Extended to prevent Cloudflare Error 524 timeouts
         proxy_connect_timeout 120s;

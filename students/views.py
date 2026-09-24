@@ -13,8 +13,15 @@ def manual_lookup(request):
     form = StudentSearchForm(request.GET or None)
     students = Student.objects.none()
     if form.is_valid():
-        query = form.cleaned_data["query"]
-        students = Student.objects.filter(Q(student_id__icontains=query) | Q(full_name__icontains=query), is_active=True)[:20]
+        query = form.cleaned_data["query"].strip()
+        if query:
+            students = (
+                Student.objects.filter(
+                    Q(student_id__icontains=query) | Q(full_name__icontains=query),
+                    is_active=True,
+                )
+                .select_related("class_room")[:20]
+            )
     return render(request, "students/manual_lookup.html", {"form": form, "students": students})
 
 
