@@ -1,276 +1,122 @@
 {% extends "base.html" %}
 {% load static %}
 
-{% block title %}Live QR Projector · {{ class_room.name }} — Face Info{% endblock %}
+{% block title %}{{ class_room.name }} — Live QR{% endblock %}
 
 {% block extra_head %}
 <style>
-  :root {
-    --p-bg: #090d16;
-    --p-surface: #111827;
-    --p-surface-elevated: #1e293b;
-    --p-border: rgba(255, 255, 255, 0.08);
-    --p-border-accent: rgba(99, 102, 241, 0.25);
-    --p-text: #f8fafc;
-    --p-text-muted: #94a3b8;
-    --p-primary: #6366f1;
-    --p-primary-glow: rgba(99, 102, 241, 0.35);
-    --p-success: #10b981;
-    --p-success-glow: rgba(16, 185, 129, 0.3);
-    --p-warning: #f59e0b;
-    --p-warning-glow: rgba(245, 158, 11, 0.3);
-    --p-danger: #ef4444;
-    --p-danger-glow: rgba(239, 68, 68, 0.4);
-    --p-radius: 20px;
-    --p-radius-sm: 12px;
+  .qr-screen {
+    max-width: 580px;
+    margin: 1.5rem auto 3rem;
   }
 
-  /* Full-bleed dark mode container */
-  .projector-page {
-    max-width: 1040px;
-    margin: 0 auto;
-    color: var(--p-text);
+  /* Main Card */
+  .qr-card {
+    background: #ffffff;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    border-radius: 20px;
+    box-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.06);
+    overflow: hidden;
   }
 
-  /* Header Card */
-  .p-header-card {
-    background: linear-gradient(135deg, rgba(30, 41, 59, 0.75), rgba(15, 23, 42, 0.85));
-    border: 1px solid var(--p-border);
-    border-radius: var(--p-radius);
-    padding: 1.5rem 1.75rem;
-    margin-bottom: 1.5rem;
-    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
-    backdrop-filter: blur(12px);
+  /* Header */
+  .qr-header {
+    padding: 1.5rem 1.75rem 1rem;
     display: flex;
-    flex-wrap: wrap;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
-    gap: 1.25rem;
+    gap: 1rem;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.05);
   }
 
-  .p-badge-live {
+  .qr-status-pill {
     display: inline-flex;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.35rem 0.85rem;
-    background: rgba(16, 185, 129, 0.12);
-    border: 1px solid rgba(16, 185, 129, 0.3);
-    border-radius: 9999px;
-    color: #34d399;
-    font-size: 0.78rem;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
+    gap: 6px;
+    padding: 3px 10px;
+    background: #ecfdf5;
+    border: 1px solid #a7f3d0;
+    border-radius: 999px;
+    color: #059669;
+    font-size: 0.75rem;
+    font-weight: 600;
   }
 
-  .p-pulse-dot {
-    width: 8px;
-    height: 8px;
+  .qr-status-dot {
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
-    background-color: #10b981;
-    box-shadow: 0 0 10px #10b981;
-    animation: p-pulse 1.8s infinite;
+    background: #10b981;
+    box-shadow: 0 0 6px #10b981;
   }
 
-  @keyframes p-pulse {
-    0% { transform: scale(0.95); opacity: 0.9; }
-    50% { transform: scale(1.35); opacity: 0.4; }
-    100% { transform: scale(0.95); opacity: 0.9; }
+  .qr-title {
+    font-size: 1.35rem;
+    font-weight: 700;
+    color: #0f172a;
+    margin: 0.35rem 0 0.15rem;
   }
 
-  .p-title {
-    font-size: 1.65rem;
-    font-weight: 800;
-    margin: 0.4rem 0 0.2rem 0;
-    background: linear-gradient(135deg, #ffffff, #cbd5e1);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-  }
-
-  .p-subtitle {
-    font-size: 0.85rem;
-    color: var(--p-text-muted);
+  .qr-subtitle {
+    font-size: 0.825rem;
+    color: #64748b;
     margin: 0;
   }
 
-  .p-btn-group {
+  /* Actions */
+  .qr-actions {
     display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    flex-wrap: wrap;
-  }
-
-  .p-btn {
-    display: inline-flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.6rem 1.15rem;
-    border-radius: var(--p-radius-sm);
-    font-size: 0.875rem;
-    font-weight: 600;
-    border: 1px solid transparent;
-    cursor: pointer;
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    text-decoration: none;
   }
 
-  .p-btn-primary {
-    background: linear-gradient(135deg, #6366f1, #4f46e5);
-    color: #ffffff;
-    box-shadow: 0 4px 14px var(--p-primary-glow);
-  }
-  .p-btn-primary:hover {
-    background: linear-gradient(135deg, #4f46e5, #4338ca);
-    color: #ffffff;
-    transform: translateY(-1px);
-    box-shadow: 0 6px 20px var(--p-primary-glow);
-  }
-
-  .p-btn-secondary {
-    background: rgba(255, 255, 255, 0.06);
-    border-color: rgba(255, 255, 255, 0.12);
-    color: #e2e8f0;
-  }
-  .p-btn-secondary:hover {
-    background: rgba(255, 255, 255, 0.12);
-    color: #ffffff;
-  }
-
-  .p-btn-danger {
-    background: rgba(239, 68, 68, 0.12);
-    border-color: rgba(239, 68, 68, 0.25);
-    color: #f87171;
-  }
-  .p-btn-danger:hover {
-    background: rgba(239, 68, 68, 0.22);
-    color: #fca5a5;
-  }
-
-  /* Attendance Live Stats Ribbon */
-  .p-stats-bar {
-    background: rgba(17, 24, 39, 0.7);
-    border: 1px solid var(--p-border);
-    border-radius: var(--p-radius-sm);
-    padding: 1rem 1.25rem;
-    margin-bottom: 1.5rem;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
-  }
-
-  .p-stat-item {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-  }
-
-  .p-stat-icon {
+  .qr-btn-icon {
     width: 36px;
     height: 36px;
     border-radius: 10px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 1.1rem;
-    background: rgba(255, 255, 255, 0.05);
-  }
-
-  .p-stat-val {
-    font-size: 1.2rem;
-    font-weight: 800;
-    line-height: 1;
-    color: #ffffff;
-  }
-
-  .p-stat-lbl {
-    font-size: 0.75rem;
-    color: var(--p-text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    margin-top: 2px;
-  }
-
-  .p-progress-track {
-    flex-grow: 1;
-    min-width: 140px;
-    max-width: 240px;
-    height: 8px;
-    background: rgba(255, 255, 255, 0.08);
-    border-radius: 9999px;
-    overflow: hidden;
-    position: relative;
-  }
-
-  .p-progress-fill {
-    height: 100%;
-    width: 0%;
-    background: linear-gradient(90deg, #10b981, #06b6d4);
-    border-radius: 9999px;
-    transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
-    box-shadow: 0 0 10px rgba(16, 185, 129, 0.5);
-  }
-
-  /* Main Projector Cinema Box */
-  #projectorBox {
-    background: radial-gradient(circle at 50% 10%, rgba(99, 102, 241, 0.12) 0%, rgba(15, 23, 42, 0.95) 75%);
-    border: 1px solid var(--p-border-accent);
-    border-radius: 28px;
-    padding: 2.5rem 2rem;
-    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6), 0 0 40px rgba(99, 102, 241, 0.1);
-    text-align: center;
-    position: relative;
-    overflow: hidden;
-  }
-
-  /* Ambient corner glow */
-  #projectorBox::before {
-    content: '';
-    position: absolute;
-    top: -50px;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 400px;
-    height: 150px;
-    background: radial-gradient(ellipse, rgba(99, 102, 241, 0.2), transparent 70%);
-    pointer-events: none;
-  }
-
-  /* Anti-Cheat Shield Badge */
-  .p-security-pill {
+    border: 1px solid #e2e8f0;
+    background: #ffffff;
+    color: #475569;
     display: inline-flex;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.45rem 1.15rem;
-    background: rgba(245, 158, 11, 0.1);
-    border: 1px solid rgba(245, 158, 11, 0.25);
-    border-radius: 9999px;
-    color: #fbbf24;
-    font-size: 0.8rem;
-    font-weight: 600;
-    margin-bottom: 2rem;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    text-decoration: none;
   }
 
-  /* QR Stage Canvas Card */
-  .p-qr-wrapper {
-    position: relative;
-    margin: 0 auto;
-    width: 290px;
-    height: 290px;
+  .qr-btn-icon:hover {
+    background: #f8fafc;
+    color: #0f172a;
+    border-color: #cbd5e1;
+  }
+
+  .qr-btn-icon.danger:hover {
+    background: #fef2f2;
+    color: #dc2626;
+    border-color: #fecaca;
+  }
+
+  /* Center Stage */
+  .qr-body {
+    padding: 2rem 1.5rem;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .qr-box {
+    width: 250px;
+    height: 250px;
+    padding: 12px;
     background: #ffffff;
-    border-radius: 28px;
-    padding: 1.25rem;
+    border-radius: 16px;
+    border: 1px solid #f1f5f9;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
     display: flex;
     align-items: center;
     justify-content: center;
-    box-shadow: 0 0 50px rgba(99, 102, 241, 0.3), 0 20px 30px -10px rgba(0, 0, 0, 0.5);
-    transition: transform 0.3s ease, box-shadow 0.3s ease;
-  }
-
-  .p-qr-wrapper:hover {
-    transform: scale(1.02);
-    box-shadow: 0 0 70px rgba(99, 102, 241, 0.45);
   }
 
   #qrcode {
@@ -284,448 +130,267 @@
   #qrcode img, #qrcode canvas {
     max-width: 100% !important;
     height: auto !important;
-    border-radius: 12px;
   }
 
-  /* Subtle Scanner Line Animation across QR */
-  .p-qr-scan-line {
-    position: absolute;
-    top: 15px;
-    left: 15px;
-    right: 15px;
-    height: 3px;
-    background: linear-gradient(90deg, transparent, #6366f1, #a855f7, transparent);
-    box-shadow: 0 0 12px #6366f1;
-    border-radius: 2px;
-    opacity: 0.75;
-    animation: p-scan 3s ease-in-out infinite alternate;
-    pointer-events: none;
-  }
-
-  @keyframes p-scan {
-    0% { top: 15px; }
-    100% { top: calc(100% - 18px); }
-  }
-
-  /* Circular Countdown Timer */
-  .p-timer-section {
-    margin-top: 2rem;
-    display: flex;
-    flex-direction: column;
+  /* Timer & Expiry */
+  .qr-timer-pill {
+    display: inline-flex;
     align-items: center;
-    justify-content: center;
+    gap: 8px;
+    margin-top: 1.25rem;
+    padding: 6px 14px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    color: #475569;
+    font-weight: 500;
   }
 
-  .p-timer-relative {
-    position: relative;
-    width: 88px;
-    height: 88px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .p-timer-svg {
-    width: 88px;
-    height: 88px;
+  .qr-ring-svg {
+    width: 20px;
+    height: 20px;
     transform: rotate(-90deg);
   }
 
-  .p-ring-bg {
-    stroke: rgba(255, 255, 255, 0.08);
+  .qr-ring-bg {
+    stroke: #e2e8f0;
   }
 
-  .p-ring-fill {
-    stroke: var(--p-primary);
-    stroke-linecap: round;
-    transition: stroke-dashoffset 1s linear, stroke 0.3s ease;
-    filter: drop-shadow(0 0 6px var(--p-primary-glow));
+  .qr-ring-fill {
+    stroke: #4f46e5;
+    transition: stroke-dashoffset 1s linear, stroke 0.2s ease;
   }
 
-  .p-ring-fill.warning {
-    stroke: var(--p-warning);
-    filter: drop-shadow(0 0 8px var(--p-warning-glow));
+  .qr-ring-fill.warning {
+    stroke: #f59e0b;
   }
 
-  .p-ring-fill.urgent {
-    stroke: var(--p-danger);
-    filter: drop-shadow(0 0 12px var(--p-danger-glow));
-    animation: p-heartbeat 0.9s infinite;
+  .qr-ring-fill.urgent {
+    stroke: #ef4444;
   }
 
-  @keyframes p-heartbeat {
-    0% { stroke-width: 6; }
-    50% { stroke-width: 8; }
-    100% { stroke-width: 6; }
-  }
-
-  .p-timer-number {
-    position: absolute;
-    font-size: 1.55rem;
-    font-weight: 800;
-    color: #ffffff;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .p-token-meta {
-    margin-top: 0.75rem;
-    font-size: 0.82rem;
-    color: var(--p-text-muted);
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
-
-  .p-token-badge {
-    background: rgba(255, 255, 255, 0.06);
-    padding: 0.25rem 0.65rem;
-    border-radius: 6px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-  }
-
-  /* Live Arrival Ticker */
-  .p-live-ticker {
-    margin-top: 1.5rem;
-    min-height: 38px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .p-ticker-bubble {
+  /* Attendance Progress Pill */
+  .qr-stats-pill {
     display: inline-flex;
     align-items: center;
-    gap: 0.6rem;
-    padding: 0.4rem 1rem;
-    background: rgba(16, 185, 129, 0.15);
-    border: 1px solid rgba(16, 185, 129, 0.3);
-    border-radius: 9999px;
-    color: #6ee7b7;
+    gap: 8px;
+    margin-top: 0.85rem;
     font-size: 0.825rem;
-    font-weight: 600;
-    animation: p-fade-in 0.3s ease-out;
+    color: #64748b;
   }
 
-  @keyframes p-fade-in {
-    from { opacity: 0; transform: translateY(6px); }
-    to { opacity: 1; transform: translateY(0); }
+  .qr-progress-bar {
+    width: 120px;
+    height: 6px;
+    background: #e2e8f0;
+    border-radius: 999px;
+    overflow: hidden;
   }
 
-  /* Instructions Grid */
-  .p-steps-grid {
-    margin-top: 2rem;
-    padding-top: 1.75rem;
-    border-top: 1px solid rgba(255, 255, 255, 0.08);
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 1rem;
-    text-align: left;
+  .qr-progress-fill {
+    height: 100%;
+    width: 0%;
+    background: #10b981;
+    border-radius: 999px;
+    transition: width 0.4s ease;
   }
 
-  .p-step-card {
-    background: rgba(255, 255, 255, 0.02);
-    border: 1px solid rgba(255, 255, 255, 0.05);
-    border-radius: var(--p-radius-sm);
-    padding: 0.85rem 1rem;
-    display: flex;
-    align-items: flex-start;
-    gap: 0.85rem;
+  /* Footer Hint */
+  .qr-footer {
+    padding: 0.85rem 1.5rem;
+    background: #f8fafc;
+    border-top: 1px solid rgba(0, 0, 0, 0.05);
+    text-align: center;
+    font-size: 0.78rem;
+    color: #64748b;
   }
 
-  .p-step-num {
-    width: 28px;
-    height: 28px;
-    border-radius: 8px;
-    background: linear-gradient(135deg, rgba(99, 102, 241, 0.25), rgba(168, 85, 247, 0.25));
-    border: 1px solid rgba(99, 102, 241, 0.4);
-    color: #c7d2fe;
-    font-weight: 800;
-    font-size: 0.85rem;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-  }
-
-  .p-step-text {
-    font-size: 0.82rem;
-    color: #cbd5e1;
-    line-height: 1.4;
-    margin: 0;
-  }
-
-  /* Native Fullscreen Enhancement (Cinema Mode) */
+  /* Fullscreen Mode */
   #projectorBox:fullscreen {
     width: 100vw;
     height: 100vh;
-    border-radius: 0;
-    border: none;
-    padding: 3rem 2rem;
+    background: #0f172a;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    background: radial-gradient(circle at 50% 25%, #1e1b4b 0%, #090d16 80%);
-  }
-
-  #projectorBox:fullscreen .p-qr-wrapper {
-    width: 360px;
-    height: 360px;
-    box-shadow: 0 0 90px rgba(99, 102, 241, 0.5);
-  }
-
-  #projectorBox:fullscreen .p-timer-relative {
-    width: 110px;
-    height: 110px;
-  }
-
-  #projectorBox:fullscreen .p-timer-svg {
-    width: 110px;
-    height: 110px;
-  }
-
-  #projectorBox:fullscreen .p-timer-number {
-    font-size: 2rem;
-  }
-
-  #projectorBox:fullscreen .p-steps-grid {
-    display: none;
-  }
-
-  /* Fullscreen Floating Exit Button */
-  .p-fs-exit-btn {
-    display: none;
-    position: absolute;
-    top: 1.5rem;
-    right: 1.5rem;
-    padding: 0.5rem 1rem;
-    background: rgba(255, 255, 255, 0.1);
-    backdrop-filter: blur(8px);
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    border-radius: 9999px;
+    padding: 2rem;
     color: #ffffff;
-    font-size: 0.85rem;
-    cursor: pointer;
   }
 
-  #projectorBox:fullscreen .p-fs-exit-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
+  #projectorBox:fullscreen .qr-card {
+    background: #1e293b;
+    border-color: rgba(255, 255, 255, 0.1);
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+    max-width: 440px;
+    width: 100%;
+  }
+
+  #projectorBox:fullscreen .qr-header {
+    border-color: rgba(255, 255, 255, 0.08);
+  }
+
+  #projectorBox:fullscreen .qr-title {
+    color: #f8fafc;
+  }
+
+  #projectorBox:fullscreen .qr-subtitle {
+    color: #94a3b8;
+  }
+
+  #projectorBox:fullscreen .qr-box {
+    width: 290px;
+    height: 290px;
+    background: #ffffff;
+  }
+
+  #projectorBox:fullscreen .qr-timer-pill {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.12);
+    color: #cbd5e1;
+  }
+
+  #projectorBox:fullscreen .qr-footer {
+    background: rgba(15, 23, 42, 0.5);
+    border-color: rgba(255, 255, 255, 0.08);
+    color: #94a3b8;
+  }
+
+  #projectorBox:fullscreen .qr-btn-icon {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.15);
+    color: #f8fafc;
   }
 </style>
 {% endblock %}
 
 {% block content %}
-<div class="projector-page">
+<div class="qr-screen" id="projectorBox">
+  <div class="qr-card">
 
-  <!-- Header Card -->
-  <div class="p-header-card">
-    <div>
-      <div class="d-flex align-items-center gap-2 flex-wrap">
-        <span class="p-badge-live">
-          <span class="p-pulse-dot"></span>
-          Live Session
+    <!-- Header -->
+    <div class="qr-header">
+      <div>
+        <div class="d-flex align-items-center gap-2">
+          <span class="qr-status-pill">
+            <span class="qr-status-dot"></span>
+            Live
+          </span>
+          {% if class_room.room %}
+            <span class="text-muted small">Room {{ class_room.room }}</span>
+          {% endif %}
+        </div>
+        <h1 class="qr-title">{{ class_room.name }}</h1>
+        <p class="qr-subtitle">
+          {% if teacher %}{{ teacher.name|default:teacher }} &bull; {% endif %}
+          {{ session.start_time|time:"H:i" }} - {{ session.end_time|time:"H:i" }}
+        </p>
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="qr-actions">
+        <button id="fullscreenBtn" class="qr-btn-icon" title="Toggle Fullscreen (F)">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M4 8V4m0 0h4M4 4l5 5m11-5h-4m4 0v4m0 0l-5-5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"/>
+          </svg>
+        </button>
+
+        <button id="refreshBtn" class="qr-btn-icon" title="Refresh QR Token (Space)">
+          <svg id="refreshIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+          </svg>
+        </button>
+
+        <button id="endSessionBtn" class="qr-btn-icon danger" title="End Session">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Center Stage -->
+    <div class="qr-body">
+      <!-- QR Canvas -->
+      <div class="qr-box">
+        <div id="qrcode"></div>
+      </div>
+
+      <!-- Expiry Countdown Pill -->
+      <div class="qr-timer-pill">
+        <svg class="qr-ring-svg" viewBox="0 0 20 20">
+          <circle cx="10" cy="10" r="7.5" stroke-width="2.5" class="qr-ring-bg" fill="transparent"/>
+          <circle id="countdownRing" cx="10" cy="10" r="7.5" stroke-width="2.5" class="qr-ring-fill" fill="transparent" stroke-dasharray="47.12" stroke-dashoffset="0" stroke-linecap="round"/>
+        </svg>
+        <span>Rotates in <strong id="countdownNumber">{{ interval_seconds }}s</strong></span>
+      </div>
+
+      <!-- Attendance Stats Pill -->
+      <div class="qr-stats-pill">
+        <span id="attendanceSummaryText">
+          <strong id="presentCountVal">{{ present_count|default:0 }}</strong> of {{ enrolled_count|default:0 }} checked in
         </span>
-        <span class="text-secondary small fw-medium">
-          🛡️ Anti-Cheat Protected &bull; {{ interval_seconds }}s Token Window
-        </span>
+        <div class="qr-progress-bar">
+          <div class="qr-progress-fill" id="attendanceProgressFill"></div>
+        </div>
       </div>
-      <h1 class="p-title">{{ class_room.name }}</h1>
-      <p class="p-subtitle">
-        {% if teacher %}Teacher: <strong>{{ teacher.name|default:teacher }}</strong> &bull; {% endif %}
-        {{ session.date|date:"l, M d, Y" }} &bull; {{ session.start_time|time:"H:i" }} - {{ session.end_time|time:"H:i" }}
-        {% if class_room.room %}&bull; Room: {{ class_room.room }}{% endif %}
-      </p>
     </div>
 
-    <!-- Controls -->
-    <div class="p-btn-group">
-      <button id="fullscreenBtn" class="p-btn p-btn-primary" title="Press 'F' for Fullscreen Projector">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M4 8V4m0 0h4M4 4l5 5m11-5h-4m4 0v4m0 0l-5-5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"/>
-        </svg>
-        Fullscreen Projector (F)
-      </button>
-
-      <button id="refreshBtn" class="p-btn p-btn-secondary" title="Press 'Space' to rotate token">
-        <svg id="refreshIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-        </svg>
-        Rotate Now
-      </button>
-
-      <button id="endSessionBtn" class="p-btn p-btn-danger" title="Conclude session and trigger absence alerts">
-        End Session
-      </button>
-
-      <a href="/admin/attendance/session/" class="p-btn p-btn-secondary">
-        Back
-      </a>
+    <!-- Minimal Hint -->
+    <div class="qr-footer">
+      Scan with the Student Attendance mobile app to verify presence.
     </div>
+
   </div>
-
-  <!-- Attendance Live Stats Ribbon -->
-  <div class="p-stats-bar">
-    <div class="p-stat-item">
-      <div class="p-stat-icon">👥</div>
-      <div>
-        <div class="p-stat-val" id="totalEnrolledVal">{{ enrolled_count|default:0 }}</div>
-        <div class="p-stat-lbl">Enrolled Students</div>
-      </div>
-    </div>
-
-    <div class="p-stat-item">
-      <div class="p-stat-icon" style="color: #34d399;">✓</div>
-      <div>
-        <div class="p-stat-val text-success" id="presentCountVal">{{ present_count|default:0 }}</div>
-        <div class="p-stat-lbl">Checked In</div>
-      </div>
-    </div>
-
-    <div class="p-stat-item">
-      <div class="p-stat-icon" style="color: #fbbf24;">⏳</div>
-      <div>
-        <div class="p-stat-val text-warning" id="pendingCountVal">0</div>
-        <div class="p-stat-lbl">Pending</div>
-      </div>
-    </div>
-
-    <!-- Progress Track -->
-    <div class="d-flex align-items-center gap-2">
-      <div class="p-progress-track">
-        <div class="p-progress-fill" id="attendanceProgressFill"></div>
-      </div>
-      <span class="small fw-bold text-white" id="attendancePercentVal">0%</span>
-    </div>
-  </div>
-
-  <!-- Main Cinema Projector Box -->
-  <div id="projectorBox">
-    <!-- Fullscreen Exit Button -->
-    <button class="p-fs-exit-btn" id="exitFsBtn">
-      ✕ Exit Fullscreen (Esc)
-    </button>
-
-    <!-- Anti-Cheat Security Notice -->
-    <div class="p-security-pill">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
-      </svg>
-      Dynamic Rolling Token &bull; Auto-Expires Every {{ interval_seconds }}s &bull; Remote Photos Rejected
-    </div>
-
-    <!-- QR Code Card Container -->
-    <div class="p-qr-wrapper">
-      <div class="p-qr-scan-line"></div>
-      <div id="qrcode"></div>
-    </div>
-
-    <!-- Circular Countdown Timer -->
-    <div class="p-timer-section">
-      <div class="p-timer-relative">
-        <svg class="p-timer-svg" viewBox="0 0 88 88">
-          <circle cx="44" cy="44" r="38" stroke-width="6" class="p-ring-bg" fill="transparent"/>
-          <circle id="countdownRing" cx="44" cy="44" r="38" stroke-width="6" class="p-ring-fill" fill="transparent" stroke-dasharray="238.76" stroke-dashoffset="0"/>
-        </svg>
-        <span id="countdownNumber" class="p-timer-number">{{ interval_seconds }}</span>
-      </div>
-
-      <div class="p-token-meta">
-        <span>Active Token:</span>
-        <span class="p-token-badge" id="tokenLabel">Syncing with server...</span>
-      </div>
-    </div>
-
-    <!-- Live Arrival Ticker -->
-    <div class="p-live-ticker">
-      <div class="p-ticker-bubble" id="liveArrivalTicker" style="display: none;">
-        <span>🎉</span>
-        <span id="tickerText">Awaiting student check-ins...</span>
-      </div>
-    </div>
-
-    <!-- Student Instruction Steps -->
-    <div class="p-steps-grid">
-      <div class="p-step-card">
-        <div class="p-step-num">1</div>
-        <p class="p-step-text">Open <strong>Student Portal</strong> scanner on your smartphone.</p>
-      </div>
-      <div class="p-step-card">
-        <div class="p-step-num">2</div>
-        <p class="p-step-text">Point camera directly at the <strong>live QR code</strong> on this screen.</p>
-      </div>
-      <div class="p-step-card">
-        <div class="p-step-num">3</div>
-        <p class="p-step-text">Attendance is confirmed in <strong>real-time</strong> with biometric token.</p>
-      </div>
-    </div>
-  </div>
-
 </div>
 {% endblock %}
 
 {% block extra_js %}
-<!-- QRCode Library -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script>
 (() => {
   const sessionId = {{ session.id }};
   const intervalSeconds = {{ interval_seconds|default:20 }};
-  const radius = 38;
-  const circumference = 2 * Math.PI * radius; // ~238.76
+  const circumference = 2 * Math.PI * 7.5; // ~47.12
 
   const qrcodeContainer = document.getElementById("qrcode");
   const ring = document.getElementById("countdownRing");
   const countNum = document.getElementById("countdownNumber");
-  const tokenLabel = document.getElementById("tokenLabel");
   const fullscreenBtn = document.getElementById("fullscreenBtn");
-  const exitFsBtn = document.getElementById("exitFsBtn");
   const refreshBtn = document.getElementById("refreshBtn");
   const refreshIcon = document.getElementById("refreshIcon");
   const endSessionBtn = document.getElementById("endSessionBtn");
   const projectorBox = document.getElementById("projectorBox");
 
-  const totalEnrolledVal = document.getElementById("totalEnrolledVal");
   const presentCountVal = document.getElementById("presentCountVal");
-  const pendingCountVal = document.getElementById("pendingCountVal");
   const progressFill = document.getElementById("attendanceProgressFill");
-  const percentVal = document.getElementById("attendancePercentVal");
-  const liveArrivalTicker = document.getElementById("liveArrivalTicker");
-  const tickerText = document.getElementById("tickerText");
+  const attendanceSummaryText = document.getElementById("attendanceSummaryText");
 
   let qrCodeObj = null;
-  let currentToken = "";
   let secondsLeft = intervalSeconds;
   let isFetching = false;
-  let lastCheckedTime = new Date().toISOString();
-  let knownCheckedCount = {{ present_count|default:0 }};
+  let enrolledCount = {{ enrolled_count|default:0 }};
 
   function updateAttendanceProgress(present, total) {
-    total = parseInt(total, 10) || 0;
+    total = parseInt(total, 10) || enrolledCount;
     present = parseInt(present, 10) || 0;
-    const pending = Math.max(0, total - present);
-
-    totalEnrolledVal.textContent = total;
     presentCountVal.textContent = present;
-    pendingCountVal.textContent = pending;
+    attendanceSummaryText.innerHTML = `<strong>${present}</strong> of ${total} checked in`;
 
     const pct = total > 0 ? Math.min(100, Math.round((present / total) * 100)) : 0;
     progressFill.style.width = pct + "%";
-    percentVal.textContent = pct + "%";
   }
 
-  // Initial progress calculation
   updateAttendanceProgress({{ present_count|default:0 }}, {{ enrolled_count|default:0 }});
 
   function renderQR(text) {
     if (!qrCodeObj) {
       qrCodeObj = new QRCode(qrcodeContainer, {
         text: text,
-        width: 256,
-        height: 256,
-        colorDark: "#090d16",
+        width: 226,
+        height: 226,
+        colorDark: "#0f172a",
         colorLight: "#ffffff",
         correctLevel: QRCode.CorrectLevel.M
       });
@@ -740,54 +405,46 @@
     isFetching = true;
     try {
       if (refreshIcon) {
-        refreshIcon.style.transition = "transform 0.5s ease";
+        refreshIcon.style.transition = "transform 0.4s ease";
         refreshIcon.style.transform = "rotate(360deg)";
       }
 
       const resp = await fetch(`/api/teacher/sessions/${sessionId}/qr/dynamic/`, {
         headers: { "Accept": "application/json" }
       });
-      if (!resp.ok) {
-        tokenLabel.textContent = "Offline or Session Closed";
-        return;
-      }
+      if (!resp.ok) return;
       const data = await resp.json();
-      currentToken = data.token;
       secondsLeft = data.expires_in_seconds || intervalSeconds;
-      renderQR(currentToken);
-      tokenLabel.textContent = `${currentToken.substring(0, 8)}...${currentToken.substring(currentToken.length - 6)}`;
+      renderQR(data.token);
       updateTimerVisuals();
     } catch (err) {
-      console.error("Failed to load dynamic QR token", err);
-      tokenLabel.textContent = "Connection error";
+      console.warn("QR fetch error", err);
     } finally {
       isFetching = false;
       if (refreshIcon) {
         setTimeout(() => {
           refreshIcon.style.transition = "none";
           refreshIcon.style.transform = "rotate(0deg)";
-        }, 500);
+        }, 400);
       }
     }
   }
 
   function updateTimerVisuals() {
-    countNum.textContent = secondsLeft;
+    countNum.textContent = secondsLeft + "s";
     const progress = Math.max(0, Math.min(1, secondsLeft / intervalSeconds));
     const offset = circumference * (1 - progress);
     ring.style.strokeDashoffset = offset;
 
-    // Smooth color change based on urgency
     if (secondsLeft <= 4) {
-      ring.className.baseVal = "p-ring-fill urgent";
-    } else if (secondsLeft <= 9) {
-      ring.className.baseVal = "p-ring-fill warning";
+      ring.className.baseVal = "qr-ring-fill urgent";
+    } else if (secondsLeft <= 8) {
+      ring.className.baseVal = "qr-ring-fill warning";
     } else {
-      ring.className.baseVal = "p-ring-fill";
+      ring.className.baseVal = "qr-ring-fill";
     }
   }
 
-  // 1-second countdown tick
   setInterval(() => {
     secondsLeft--;
     if (secondsLeft <= 0) {
@@ -797,98 +454,59 @@
     }
   }, 1000);
 
-  // Poll real-time attendance live-feed every 4 seconds
-  async function pollLiveAttendance() {
+  // Poll attendance feed
+  async function pollAttendance() {
     try {
-      const url = `/api/teacher/sessions/${sessionId}/live-feed/?since=${encodeURIComponent(lastCheckedTime)}`;
-      const resp = await fetch(url, { headers: { "Accept": "application/json" } });
+      const resp = await fetch(`/api/teacher/sessions/${sessionId}/live-feed/`, {
+        headers: { "Accept": "application/json" }
+      });
       if (!resp.ok) return;
       const data = await resp.json();
-
       const present = (data.counts && data.counts.present) || 0;
       const late = (data.counts && data.counts.late) || 0;
-      const totalChecked = present + late;
-      const totalEnrolled = data.total_enrolled || 0;
-
-      updateAttendanceProgress(totalChecked, totalEnrolled);
-
-      // If new records arrived, show animated toast in ticker
-      if (data.records && data.records.length > 0) {
-        const latest = data.records[0];
-        tickerText.textContent = `${latest.student_name} checked in via ${latest.method === 'face' ? 'Face Match' : 'QR Scan'}`;
-        liveArrivalTicker.style.display = "inline-flex";
-        setTimeout(() => {
-          liveArrivalTicker.style.display = "none";
-        }, 5000);
-      }
-
-      lastCheckedTime = new Date().toISOString();
-    } catch (e) {
-      // Background poll failure is non-blocking
-    }
+      updateAttendanceProgress(present + late, data.total_enrolled || enrolledCount);
+    } catch (e) {}
   }
 
-  setInterval(pollLiveAttendance, 4000);
+  setInterval(pollAttendance, 5000);
 
-  // Initial QR load
+  // Initial loads
   fetchDynamicQR();
-  setTimeout(pollLiveAttendance, 1500);
+  setTimeout(pollAttendance, 1500);
 
-  // Fullscreen controls
+  // Fullscreen
   function toggleFullscreen() {
     if (!document.fullscreenElement) {
-      projectorBox.requestFullscreen().catch(err => {
-        alert("Fullscreen request denied: " + err.message);
-      });
+      projectorBox.requestFullscreen().catch(() => {});
     } else {
       document.exitFullscreen();
     }
   }
 
   fullscreenBtn.addEventListener("click", toggleFullscreen);
-  exitFsBtn.addEventListener("click", () => {
-    if (document.fullscreenElement) document.exitFullscreen();
-  });
+  refreshBtn.addEventListener("click", fetchDynamicQR);
 
-  refreshBtn.addEventListener("click", () => {
-    fetchDynamicQR();
-  });
-
-  // End Session button
+  // End session
   endSessionBtn.addEventListener("click", async () => {
-    const confirmed = confirm("Are you sure you want to end this attendance session? Absence notifications will be sent to unverified students.");
-    if (!confirmed) return;
-
-    endSessionBtn.disabled = true;
-    endSessionBtn.textContent = "Ending...";
+    if (!confirm("End this attendance session? Unrecorded students will be marked absent.")) return;
     try {
       const csrfCookie = document.cookie.split("; ").find(r => r.startsWith("csrftoken="));
       const csrfToken = csrfCookie ? csrfCookie.split("=")[1] : "";
-
       const resp = await fetch(`/api/teacher/sessions/${sessionId}/end/`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRFToken": csrfToken
-        }
+        headers: { "Content-Type": "application/json", "X-CSRFToken": csrfToken }
       });
-      const data = await resp.json();
       if (resp.ok) {
-        alert("Session ended successfully. Absence alerts have been dispatched.");
         window.location.href = "/admin/attendance/session/";
       } else {
-        alert("Could not end session: " + (data.error || "Unknown error"));
-        endSessionBtn.disabled = false;
-        endSessionBtn.textContent = "End Session";
+        alert("Failed to end session.");
       }
-    } catch (err) {
-      alert("Network error: " + err.message);
-      endSessionBtn.disabled = false;
-      endSessionBtn.textContent = "End Session";
+    } catch (e) {
+      alert("Network error: " + e.message);
     }
   });
 
-  // Keyboard Shortcuts: 'F' for Fullscreen, 'Space' for Rotate
+  // Keyboard shortcuts
   window.addEventListener("keydown", (e) => {
     if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
     if (e.key === "f" || e.key === "F") {
