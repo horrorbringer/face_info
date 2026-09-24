@@ -18,6 +18,15 @@ class ClassRoom(models.Model):
     def __str__(self):
         return self.name
 
+    def get_enrolled_students(self, active_only=True):
+        """Returns all students enrolled in this class (via ManyToMany classrooms or primary class_room)."""
+        from students.models import Student
+        from django.db.models import Q
+        qs = Student.objects.filter(Q(classrooms=self) | Q(class_room=self)).distinct()
+        if active_only:
+            qs = qs.filter(is_active=True)
+        return qs
+
 
 class Session(models.Model):
     class_room = models.ForeignKey(ClassRoom, on_delete=models.CASCADE, related_name="sessions")

@@ -37,15 +37,20 @@ class ClassRoomSerializer(serializers.ModelSerializer):
 
 class StudentProfileSerializer(serializers.ModelSerializer):
     class_room = ClassRoomSerializer(read_only=True)
+    classrooms = serializers.SerializerMethodField()
     face_embeddings_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Student
         fields = [
             "id", "student_id", "full_name", "name", "class_year",
-            "is_active", "guardian_contact", "class_room", "face_embeddings_count",
+            "is_active", "guardian_contact", "class_room", "classrooms", "face_embeddings_count",
             "consent_given_at"
         ]
+
+    def get_classrooms(self, obj):
+        classes = obj.get_enrolled_classrooms()
+        return ClassRoomSerializer(classes, many=True).data
 
     def get_face_embeddings_count(self, obj):
         return obj.face_embeddings.count()

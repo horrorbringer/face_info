@@ -66,8 +66,8 @@ def send_absence_alerts_for_session(self, session_id):
         logger.info(f"Skipping absence alerts for cancelled session {session_id}.")
         return {"cancelled": True, "message": "Session was cancelled"}
 
-    # Get all active students enrolled in this session's class
-    students = session.class_room.students.filter(is_active=True)
+    # Get all active students enrolled in this session's class (via classrooms M2M or primary class_room)
+    students = session.class_room.get_enrolled_students(active_only=True)
     bot_token = getattr(settings, "TELEGRAM_BOT_TOKEN", "")
 
     sent_count = 0

@@ -516,3 +516,87 @@ class SmartAttendanceTests(TestCase):
         limited_4th, _ = check_kiosk_rate_limit(req, max_requests=3, window_secs=30)
         self.assertTrue(limited_4th)
 
+    def test_student_multi_class_enrollment_and_attendance(self):
+        # Create a second classroom: Mathematics
+        math_class = ClassRoom.objects.create(name="MATH201", teacher=self.teacher)
+
+        # Alice enrolls in both CS101 and MATH201
+        self.student.classrooms.add(self.classroom, math_class)
+        self.assertTrue(self.student.is_enrolled_in(self.classroom))
+        self.assertTrue(self.student.is_enrolled_in(math_class))
+
+        # Create a session for Math class
+        now = timezone.localtime()
+        math_session = Session.objects.create(
+            class_room=math_class,
+            date=now.date(),
+            start_time=(now + datetime.timedelta(hours=2)).time(),
+            end_time=(now + datetime.timedelta(hours=4)).time(),
+            qr_token="math_qr_test_token",
+            qr_token_expires_at=now + datetime.timedelta(minutes=60),
+        )
+
+        # 1. Student's today schedule returns sessions from BOTH classes
+        self.client.force_authenticate(user=self.student_user)
+        schedule_resp = self.client.get("/api/students/schedule/today/")
+        self.assertEqual(schedule_resp.status_code, status.HTTP_200_OK)
+        session_ids = [s["id"] for s in schedule_resp.data]
+        self.assertIn(self.session.id, session_ids)
+        self.assertIn(math_session.id, session_ids)
+
+        # 2. Student profile returns both enrolled classes
+        me_resp = self.client.get("/api/students/me/")
+        self.assertEqual(me_resp.status_code, status.HTTP_200_OK)
+        enrolled_names = [c["name"] for c in me_resp.data["classrooms"]]
+        self.assertIn("CS101", enrolled_names)
+        self.assertIn("MATH201", enrolled_names)
+
+        # 3. Student can check in to Math class session
+        checkin_resp = self.client.post("/api/attendance/checkin/qr/", {"qr_token": "math_qr_test_token"})
+        self.assertEqual(checkin_resp.status_code, status.HTTP_201_CREATED)
+
+        # 4. Student cannot check in to a third class they are NOT enrolled in
+        physics_class = ClassRoom.objects.create(name="PHYS101", teacher=self.teacher)
+        physics_session = Session.objects.create(
+            class_room=physics_class,
+            date=now.date(),
+            start_time=now.time(),
+            end_time=(now + datetime.timedelta(hours=1)).time(),
+            qr_token="physics_qr_test_token",
+            qr_token_expires_at=now + datetime.timedelta(minutes=15),
+        )
+        not_enrolled_resp = self.client.post("/api/attendance/checkin/qr/", {"qr_token": "physics_qr_test_token"})
+        self.assertEqual(not_enrolled_resp.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(not_enrolled_resp.data["code"], "NOT_ENROLLED")
+
+    def test_teacher_classroom_students_manage(self):
+        self.client.force_authenticate(user=self.teacher_user)
+        new_class = ClassRoom.objects.create(name="Biology 101", teacher=self.teacher)
+
+        # 1. Initially no students
+        get_resp = self.client.get(f"/api/teacher/classrooms/{new_class.id}/students/")
+        self.assertEqual(get_resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(get_resp.data), 0)
+
+        # 2. Teacher enrolls student STU001
+        post_resp = self.client.post(f"/api/teacher/classrooms/{new_class.id}/students/", {
+            "student_id": "STU001"
+        })
+        self.assertEqual(post_resp.status_code, status.HTTP_200_OK)
+        self.student.refresh_from_db()
+        self.assertTrue(self.student.is_enrolled_in(new_class))
+
+        # 3. List shows enrolled student
+        get_resp2 = self.client.get(f"/api/teacher/classrooms/{new_class.id}/students/")
+        self.assertEqual(get_resp2.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(get_resp2.data), 1)
+        self.assertEqual(get_resp2.data[0]["student_id"], "STU001")
+
+        # 4. Teacher unenrolls student
+        del_resp = self.client.delete(f"/api/teacher/classrooms/{new_class.id}/students/", {
+            "student_id": "STU001"
+        })
+        self.assertEqual(del_resp.status_code, status.HTTP_200_OK)
+        self.student.refresh_from_db()
+        self.assertFalse(self.student.is_enrolled_in(new_class))
+

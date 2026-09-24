@@ -145,11 +145,12 @@ class StudentTodayScheduleView(APIView):
         if not hasattr(request.user, "student_profile"):
             return Response({"error": "No student profile found."}, status=status.HTTP_404_NOT_FOUND)
         student = request.user.student_profile
-        if not student.class_room:
+        enrolled_classrooms = student.get_enrolled_classrooms()
+        if not enrolled_classrooms.exists():
             return Response([])
 
         today = timezone.localdate()
-        sessions = list(Session.objects.filter(class_room=student.class_room, date=today).order_by("start_time"))
+        sessions = list(Session.objects.filter(class_room__in=enrolled_classrooms, date=today).select_related("class_room").order_by("start_time"))
 
         from .tasks import sync_sessions_lifecycle
         sync_sessions_lifecycle(sessions)
@@ -293,8 +294,8 @@ class QRCheckInView(APIView):
                 "code": "SESSION_EXPIRED"
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # Enforce student enrollment in this session's class
-        if student.class_room_id != session.class_room_id:
+        # Enforce student enrollment in this session's class (supports multi-class enrollment)
+        if not student.is_enrolled_in(session.class_room):
             return Response({
                 "error": f"You are not enrolled in {session.class_room.name}.",
                 "code": "NOT_ENROLLED"
@@ -545,6 +546,91 @@ class TeacherClassRoomListCreateView(APIView):
         )
 
         return Response(ClassRoomSerializer(classroom).data, status=status.HTTP_201_CREATED)
+
+
+class TeacherClassRoomStudentsView(APIView):
+    """
+    GET /api/teacher/classrooms/{class_id}/students/
+    Returns all students enrolled in this classroom.
+
+    POST /api/teacher/classrooms/{class_id}/students/
+    Enrolls a student into this classroom.
+    Payload: {"student_id": "STU001"} or {"student_pk": 1}
+
+    DELETE /api/teacher/classrooms/{class_id}/students/
+    Unenrolls a student from this classroom.
+    Payload: {"student_id": "STU001"} or {"student_pk": 1}
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, class_id):
+        classroom = get_object_or_404(ClassRoom, id=class_id)
+        if not is_authorized_teacher_or_staff(request.user, classroom):
+            return Response({"error": "Not authorized to manage this classroom.", "code": "UNAUTHORIZED"}, status=status.HTTP_403_FORBIDDEN)
+
+        students = classroom.get_enrolled_students(active_only=False).order_by("full_name")
+        serializer = StudentProfileSerializer(students, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def post(self, request, class_id):
+        classroom = get_object_or_404(ClassRoom, id=class_id)
+        if not is_authorized_teacher_or_staff(request.user, classroom):
+            return Response({"error": "Not authorized to manage this classroom.", "code": "UNAUTHORIZED"}, status=status.HTTP_403_FORBIDDEN)
+
+        student_id = request.data.get("student_id")
+        student_pk = request.data.get("student_pk")
+
+        try:
+            if student_id:
+                student = Student.objects.get(student_id=student_id)
+            elif student_pk:
+                student = Student.objects.get(id=student_pk)
+            else:
+                return Response({"error": "Provide student_id or student_pk."}, status=status.HTTP_400_BAD_REQUEST)
+        except Student.DoesNotExist:
+            return Response({"error": f"Student '{student_id or student_pk}' not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        student.classrooms.add(classroom)
+        if not student.class_room_id:
+            student.class_room = classroom
+            student.save(update_fields=["class_room"])
+
+        return Response({
+            "message": f"Student '{student.full_name}' successfully enrolled in {classroom.name}.",
+            "student_id": student.student_id,
+            "classroom_id": classroom.id,
+            "enrolled_classes": [c.name for c in student.get_enrolled_classrooms()],
+        }, status=status.HTTP_200_OK)
+
+    def delete(self, request, class_id):
+        classroom = get_object_or_404(ClassRoom, id=class_id)
+        if not is_authorized_teacher_or_staff(request.user, classroom):
+            return Response({"error": "Not authorized to manage this classroom.", "code": "UNAUTHORIZED"}, status=status.HTTP_403_FORBIDDEN)
+
+        student_id = request.data.get("student_id")
+        student_pk = request.data.get("student_pk")
+
+        try:
+            if student_id:
+                student = Student.objects.get(student_id=student_id)
+            elif student_pk:
+                student = Student.objects.get(id=student_pk)
+            else:
+                return Response({"error": "Provide student_id or student_pk."}, status=status.HTTP_400_BAD_REQUEST)
+        except Student.DoesNotExist:
+            return Response({"error": f"Student '{student_id or student_pk}' not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        student.classrooms.remove(classroom)
+        if student.class_room_id == classroom.id:
+            other = student.classrooms.first()
+            student.class_room = other
+            student.save(update_fields=["class_room"])
+
+        return Response({
+            "message": f"Student '{student.full_name}' unenrolled from {classroom.name}.",
+            "student_id": student.student_id,
+            "classroom_id": classroom.id,
+        }, status=status.HTTP_200_OK)
 
 
 class SessionRotateQRView(APIView):
@@ -812,7 +898,7 @@ class TeacherSessionRosterView(APIView):
 
 
         classroom = session.class_room
-        students = list(classroom.students.filter(is_active=True).order_by("full_name"))
+        students = list(classroom.get_enrolled_students(active_only=True).order_by("full_name"))
 
         records = AttendanceRecord.objects.filter(session=session)
         record_map = {r.student_id: r for r in records}
@@ -886,7 +972,7 @@ class TeacherSessionLiveFeedView(APIView):
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        total_enrolled = session.class_room.students.filter(is_active=True).count()
+        total_enrolled = session.class_room.get_enrolled_students(active_only=True).count()
         records_qs = AttendanceRecord.objects.filter(
             session=session, is_deleted=False
         ).select_related("student")
@@ -1119,7 +1205,9 @@ class FaceCheckInView(APIView):
             student__consent_given_at__isnull=False
         )
         if session:
-            candidates_qs = candidates_qs.filter(student__class_room=session.class_room)
+            candidates_qs = candidates_qs.filter(
+                Q(student__classrooms=session.class_room) | Q(student__class_room=session.class_room)
+            ).distinct()
 
         best_student = None
         best_score = -1.0
@@ -1319,7 +1407,7 @@ class ClassReportView(APIView):
         if not is_authorized_teacher_or_staff(request.user, classroom):
             return Response({"error": "Not authorized to view analytics for this classroom.", "code": "UNAUTHORIZED"}, status=status.HTTP_403_FORBIDDEN)
 
-        total_students = classroom.students.filter(is_active=True).count()
+        total_students = classroom.get_enrolled_students(active_only=True).count()
 
         today = timezone.localdate()
         conducted_sessions_q = (Q(date__lt=today) | Q(date=today, start_time__lte=timezone.localtime().time())) & ~Q(qr_token="CANCELLED")
@@ -1442,12 +1530,12 @@ class StudentReportView(APIView):
     def get(self, request, student_id):
         student = get_object_or_404(Student, id=student_id)
 
-        # Allow: Staff, Teacher of student's classroom, or the student themselves
+        # Allow: Staff, Teacher of any of student's classrooms, or the student themselves
         is_self = hasattr(request.user, "student_profile") and request.user.student_profile.id == student.id
+        teacher_profile = getattr(request.user, "teacher_profile", None)
         is_class_teacher = (
-            student.class_room
-            and hasattr(request.user, "teacher_profile")
-            and student.class_room.teacher_id == request.user.teacher_profile.id
+            teacher_profile is not None
+            and student.get_enrolled_classrooms().filter(teacher=teacher_profile).exists()
         )
         if not (request.user.is_staff or is_self or is_class_teacher):
             return Response({"error": "Not authorized to view this student's report.", "code": "UNAUTHORIZED"}, status=status.HTTP_403_FORBIDDEN)

@@ -27,6 +27,7 @@ urlpatterns = [
     # Teacher Endpoints
     path("teacher/classes/today/", views.TeacherTodayClassesView.as_view(), name="teacher-classes-today"),
     path("teacher/classrooms/", views.TeacherClassRoomListCreateView.as_view(), name="teacher-classrooms"),
+    path("teacher/classrooms/<int:class_id>/students/", views.TeacherClassRoomStudentsView.as_view(), name="teacher-classroom-students"),
     path("teacher/sessions/", views.TeacherSessionCreateView.as_view(), name="teacher-session-create"),
     path("teacher/sessions/<int:session_id>/roster/", views.TeacherSessionRosterView.as_view(), name="teacher-session-roster"),
     path("teacher/sessions/<int:session_id>/live-feed/", views.TeacherSessionLiveFeedView.as_view(), name="teacher-session-live-feed"),
