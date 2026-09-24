@@ -708,12 +708,16 @@ def session_live_qr(request, session_id):
     """
     from django.contrib.auth.decorators import login_required
     from django.shortcuts import render
+    from attendance.models import AttendanceRecord
 
     if not request.user.is_authenticated:
         from django.contrib.auth.views import redirect_to_login
         return redirect_to_login(request.get_full_path())
 
-    session = get_object_or_404(Session.objects.select_related("class_room"), id=session_id)
+    session = get_object_or_404(
+        Session.objects.select_related("class_room", "class_room__teacher"),
+        id=session_id
+    )
     if not is_authorized_teacher_or_staff(request.user, session.class_room):
         from django.core.exceptions import PermissionDenied
         raise PermissionDenied("Not authorized to display QR for this session.")
@@ -722,9 +726,17 @@ def session_live_qr(request, session_id):
         session.started_at = timezone.now()
         session.save(update_fields=["started_at"])
 
+    enrolled_count = session.class_room.get_enrolled_students(active_only=True).count()
+    present_count = AttendanceRecord.objects.filter(
+        session=session, status__in=["present", "late"], is_deleted=False
+    ).count()
+
     return render(request, "attendance/live_qr.html", {
         "session": session,
         "class_room": session.class_room,
+        "teacher": session.class_room.teacher,
+        "enrolled_count": enrolled_count,
+        "present_count": present_count,
         "interval_seconds": getattr(settings, "DYNAMIC_QR_INTERVAL_SECONDS", 20),
     })
 
