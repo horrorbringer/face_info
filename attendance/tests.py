@@ -530,8 +530,8 @@ class SmartAttendanceTests(TestCase):
         math_session = Session.objects.create(
             class_room=math_class,
             date=now.date(),
-            start_time=(now + datetime.timedelta(hours=2)).time(),
-            end_time=(now + datetime.timedelta(hours=4)).time(),
+            start_time=now.time(),
+            end_time=(now + datetime.timedelta(hours=1)).time(),
             qr_token="math_qr_test_token",
             qr_token_expires_at=now + datetime.timedelta(minutes=60),
         )

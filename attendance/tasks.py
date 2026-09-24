@@ -198,6 +198,8 @@ def sync_sessions_lifecycle(session_qs=None):
             datetime.datetime.combine(s.date, s.start_time),
             timezone.get_current_timezone()
         )
+        if s.end_time <= s.start_time:
+            s_end_dt += datetime.timedelta(days=1)
 
         # 1. Auto-End check
         if s.ended_at is None:

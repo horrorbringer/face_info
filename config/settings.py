@@ -93,6 +93,7 @@ USE_I18N = True
 USE_TZ = True
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+STATIC_ROOT.mkdir(exist_ok=True)
 STATICFILES_DIRS = [BASE_DIR / "static"]
 if DEBUG or "test" in sys.argv:
     STORAGES = {
@@ -153,6 +154,13 @@ CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE
+
+if "test" in sys.argv:
+    CELERY_TASK_ALWAYS_EAGER = True
+    CELERY_TASK_EAGER_PROPAGATES = True
+    CELERY_BROKER_URL = "memory://"
+    CELERY_RESULT_BACKEND = "cache+memory://"
+
 CELERY_BEAT_SCHEDULE = {
     "auto_manage_session_lifecycle_every_minute": {
         "task": "attendance.tasks.auto_manage_session_lifecycle",
