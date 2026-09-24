@@ -36,7 +36,7 @@ services:
 
   celery:
     build: .
-    command: celery -A config worker -l info
+    command: celery -A config worker -B -l info
     env_file: .env
     environment:
       DATABASE_URL: postgresql://faceinfo:change-me@db:5432/faceinfo

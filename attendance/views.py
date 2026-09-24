@@ -149,11 +149,10 @@ class StudentTodayScheduleView(APIView):
             return Response([])
 
         today = timezone.localdate()
-        sessions = Session.objects.filter(class_room=student.class_room, date=today).order_by("start_time")
+        sessions = list(Session.objects.filter(class_room=student.class_room, date=today).order_by("start_time"))
 
         from .tasks import sync_sessions_lifecycle
         sync_sessions_lifecycle(sessions)
-        sessions = Session.objects.filter(class_room=student.class_room, date=today).order_by("start_time")
 
         records = AttendanceRecord.objects.filter(student=student, session__in=sessions, is_deleted=False)
         record_map = {r.session_id: r for r in records}
@@ -476,15 +475,13 @@ class TeacherTodayClassesView(APIView):
             )
 
         today = timezone.localdate()
-        sessions = Session.objects.filter(date=today).select_related("class_room")
+        sessions_qs = Session.objects.filter(date=today).select_related("class_room")
         if not request.user.is_staff:
-            sessions = sessions.filter(class_room__teacher=request.user.teacher_profile)
+            sessions_qs = sessions_qs.filter(class_room__teacher=request.user.teacher_profile)
+        sessions = list(sessions_qs)
 
         from .tasks import sync_sessions_lifecycle
         sync_sessions_lifecycle(sessions)
-        sessions = Session.objects.filter(date=today).select_related("class_room")
-        if not request.user.is_staff:
-            sessions = sessions.filter(class_room__teacher=request.user.teacher_profile)
 
         serializer = SessionSerializer(sessions, many=True)
         return Response(serializer.data)
@@ -638,14 +635,20 @@ class SessionEndView(APIView):
             session.ended_at = timezone.now()
             session.save(update_fields=["ended_at"])
 
-        # Trigger absence alert task (async with Celery if running, or synchronous fallback)
+        # Trigger absence alert task (async with Celery if running, or background thread fallback)
         try:
             task_result = send_absence_alerts_for_session.delay(session.id)
             task_id = task_result.id
         except Exception as exc:
-            logger.warning(f"Could not queue Celery task, running synchronously: {exc}")
-            send_absence_alerts_for_session(session.id)
-            task_id = "synced"
+            logger.warning(f"Could not queue Celery task: {exc}. Dispatching in background thread.")
+            import threading
+            threading.Thread(
+                target=send_absence_alerts_for_session,
+                args=(session.id,),
+                daemon=True,
+                name=f"alert-end-session-{session.id}"
+            ).start()
+            task_id = "thread-dispatched"
 
         return Response({
             "message": "Session ended. Absence alerts have been triggered.",
@@ -809,13 +812,13 @@ class TeacherSessionRosterView(APIView):
 
 
         classroom = session.class_room
-        students = classroom.students.filter(is_active=True).order_by("full_name")
+        students = list(classroom.students.filter(is_active=True).order_by("full_name"))
 
         records = AttendanceRecord.objects.filter(session=session)
         record_map = {r.student_id: r for r in records}
 
         roster = []
-        summary = {"present": 0, "late": 0, "absent": 0, "unmarked": 0, "total": students.count()}
+        summary = {"present": 0, "late": 0, "absent": 0, "unmarked": 0, "total": len(students)}
 
         for st in students:
             rec = record_map.get(st.id)
@@ -898,9 +901,14 @@ class TeacherSessionLiveFeedView(APIView):
             except Exception:
                 pass
 
-        present_count = AttendanceRecord.objects.filter(session=session, status="present", is_deleted=False).count()
-        late_count = AttendanceRecord.objects.filter(session=session, status="late", is_deleted=False).count()
-        absent_count = AttendanceRecord.objects.filter(session=session, status="absent", is_deleted=False).count()
+        counts = AttendanceRecord.objects.filter(session=session, is_deleted=False).aggregate(
+            present_count=Count("id", filter=Q(status="present")),
+            late_count=Count("id", filter=Q(status="late")),
+            absent_count=Count("id", filter=Q(status="absent")),
+        )
+        present_count = counts["present_count"] or 0
+        late_count = counts["late_count"] or 0
+        absent_count = counts["absent_count"] or 0
         unmarked_count = max(0, total_enrolled - (present_count + late_count + absent_count))
 
         recent_records = []
@@ -1102,8 +1110,10 @@ class FaceCheckInView(APIView):
                 "is_spoof": "Spoof" in err_str or "Planar" in err_str or "moiré" in err_str
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # Narrow search space to active students with valid biometric consent
+        # Vectorized batch cosine similarity search (SIMD accelerated)
         target = np.asarray(target_vector, dtype=np.float32)
+        target_norm = float(np.linalg.norm(target))
+
         candidates_qs = StudentFace.objects.select_related("student").filter(
             student__is_active=True,
             student__consent_given_at__isnull=False
@@ -1114,17 +1124,26 @@ class FaceCheckInView(APIView):
         best_student = None
         best_score = -1.0
 
+        embeddings_list = []
+        students_list = []
         for candidate in candidates_qs:
-            stored = np.asarray(candidate.embedding, dtype=np.float32)
-            if stored.shape != target.shape:
+            try:
+                emb = np.asarray(candidate.embedding, dtype=np.float32)
+                if emb.shape == target.shape:
+                    embeddings_list.append(emb)
+                    students_list.append(candidate.student)
+            except Exception:
                 continue
-            denom = float(np.linalg.norm(target) * np.linalg.norm(stored))
-            if denom == 0:
-                continue
-            sim = float(np.dot(target, stored) / denom)
-            if sim > best_score:
-                best_score = sim
-                best_student = candidate.student
+
+        if embeddings_list and target_norm > 1e-10:
+            matrix = np.array(embeddings_list, dtype=np.float32)
+            matrix_norms = np.linalg.norm(matrix, axis=1)
+            denoms = target_norm * matrix_norms
+            denoms[denoms == 0] = 1e-10
+            similarities = np.dot(matrix, target) / denoms
+            best_idx = int(np.argmax(similarities))
+            best_score = float(similarities[best_idx])
+            best_student = students_list[best_idx]
 
         threshold = getattr(settings, "MATCH_THRESHOLD", 0.60)
 

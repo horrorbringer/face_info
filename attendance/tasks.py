@@ -12,10 +12,24 @@ from .models import AlertLog, AttendanceRecord, Session
 logger = logging.getLogger(__name__)
 
 
+_telegram_session = None
+
+
+def _get_telegram_session():
+    global _telegram_session
+    if _telegram_session is None:
+        _telegram_session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=1)
+        _telegram_session.mount("https://", adapter)
+        _telegram_session.mount("http://", adapter)
+    return _telegram_session
+
+
 def send_telegram_alert(bot_token, chat_id, text):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
-    resp = requests.post(url, json=payload, timeout=10)
+    sess = _get_telegram_session()
+    resp = sess.post(url, json=payload, timeout=5)
     resp.raise_for_status()
     data = resp.json()
     if not data.get("ok"):
@@ -193,11 +207,14 @@ def sync_sessions_lifecycle(session_qs=None):
                 try:
                     send_absence_alerts_for_session.delay(s.id)
                 except Exception as exc:
-                    logger.warning(f"Could not queue async alert for session {s.id}, invoking synchronously: {exc}")
-                    try:
-                        send_absence_alerts_for_session(s.id)
-                    except Exception as inner_exc:
-                        logger.error(f"Failed to send alerts for session {s.id}: {inner_exc}")
+                    logger.warning(f"Could not queue async alert for session {s.id} via Celery: {exc}. Dispatching in background thread.")
+                    import threading
+                    threading.Thread(
+                        target=send_absence_alerts_for_session,
+                        args=(s.id,),
+                        daemon=True,
+                        name=f"alert-session-{s.id}"
+                    ).start()
                 continue
 
         # 2. Auto-Start check

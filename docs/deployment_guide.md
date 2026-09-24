@@ -322,7 +322,14 @@ EnvironmentFile=/home/ubuntu/face_info/.env
 ExecStart=/home/ubuntu/face_info/venv/bin/gunicorn config.wsgi:application \
           --bind 127.0.0.1:8000 \
           --workers 3 \
-          --timeout 60 \
+          --threads 4 \
+          --worker-class gthread \
+          --worker-tmp-dir /dev/shm \
+          --timeout 120 \
+          --graceful-timeout 30 \
+          --keep-alive 65 \
+          --max-requests 1000 \
+          --max-requests-jitter 100 \
           --access-logfile /home/ubuntu/face_info/logs/gunicorn-access.log \
           --error-logfile /home/ubuntu/face_info/logs/gunicorn-error.log
 Restart=always
@@ -401,14 +408,24 @@ server {
 
     location / {
         proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
-        proxy_connect_timeout 60s;
-        proxy_read_timeout 60s;
+        # Timeouts: Extended to prevent Cloudflare Error 524 timeouts
+        proxy_connect_timeout 120s;
+        proxy_send_timeout 120s;
+        proxy_read_timeout 120s;
+
+        # Buffers: Prevent Cloudflare Error 520 (upstream buffer overflow on large headers)
+        proxy_buffer_size 128k;
+        proxy_buffers 4 256k;
+        proxy_busy_buffers_size 256k;
     }
+}
 ```
 
 > [!WARNING]

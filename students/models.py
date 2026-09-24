@@ -17,6 +17,9 @@ class Student(models.Model):
 
     class Meta:
         ordering = ["full_name", "student_id"]
+        indexes = [
+            models.Index(fields=["class_room", "is_active"]),
+        ]
 
     def __str__(self):
         return f"{self.student_id} — {self.full_name}"

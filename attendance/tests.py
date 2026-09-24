@@ -318,9 +318,10 @@ class SmartAttendanceTests(TestCase):
 
     def test_teacher_session_create(self):
         self.client.force_authenticate(user=self.teacher_user)
+        tomorrow = timezone.localdate() + datetime.timedelta(days=1)
         resp = self.client.post("/api/teacher/sessions/", {
             "class_room": self.classroom.id,
-            "date": str(timezone.localdate()),
+            "date": str(tomorrow),
             "start_time": "14:00:00",
             "end_time": "16:00:00",
             "auto_generate_qr": True,
