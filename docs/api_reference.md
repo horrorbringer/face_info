@@ -107,6 +107,31 @@ Returns current profile for the authenticated student.
 
 ---
 
+### `GET /api/students/schedule/today/`
+Returns today's classroom sessions for the authenticated student, including check-in status, cancelled indicator, and active QR availability.
+
+- **Auth Required:** Yes (`Token <token>`)
+- **Response `200 OK`:**
+```json
+[
+  {
+    "id": 10,
+    "class_room": "CS101",
+    "date": "2026-09-24",
+    "start_time": "09:00:00",
+    "end_time": "10:30:00",
+    "is_qr_active": true,
+    "is_checked_in": false,
+    "is_cancelled": false,
+    "my_status": null,
+    "my_method": null,
+    "checked_in_at": null
+  }
+]
+```
+
+---
+
 ## 2. Student Attendance
 
 ### `POST /api/attendance/checkin/qr/`
@@ -367,6 +392,41 @@ Ends session and triggers background absence alerts.
   "session_id": 5,
   "ended_at": "2026-09-18T10:00:00Z",
   "task_id": "78b209fa-..."
+}
+```
+
+---
+
+### `POST /api/teacher/sessions/{id}/reopen/`
+Reopens an accidentally closed session within a 30-minute grace window.
+
+- **Auth Required:** Yes (Teacher of classroom or Admin)
+- **Response `200 OK`:**
+```json
+{
+  "message": "Session reopened successfully. Attendance check-in is active again.",
+  "session": {
+    "id": 5,
+    "class_room": {"id": 1, "name": "CS101"},
+    "date": "2026-09-24",
+    "is_ended": false,
+    "is_qr_valid": true
+  }
+}
+```
+
+---
+
+### `POST /api/teacher/sessions/{id}/cancel/`
+Cancels a scheduled or active session (e.g. sick teacher, holiday). Prevents automatic absence alerts from firing.
+
+- **Auth Required:** Yes (Teacher of classroom or Admin)
+- **Response `200 OK`:**
+```json
+{
+  "message": "Session has been cancelled. No absence alerts will be dispatched.",
+  "session_id": 5,
+  "status": "cancelled"
 }
 ```
 

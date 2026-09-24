@@ -102,7 +102,7 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "anon": "60/minute",
         "user": "120/minute",
-        "attendance_checkin": "20/minute",
+        "attendance_checkin": "120/minute",
     },
 }
 
@@ -112,6 +112,12 @@ CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE
+CELERY_BEAT_SCHEDULE = {
+    "auto_manage_session_lifecycle_every_minute": {
+        "task": "attendance.tasks.auto_manage_session_lifecycle",
+        "schedule": 60.0,
+    },
+}
 
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 csrf_trusted = os.getenv("CSRF_TRUSTED_ORIGINS", "")

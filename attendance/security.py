@@ -69,7 +69,8 @@ def generate_dynamic_qr_token(session_id: int, window_offset: int = 0) -> str:
     """
     interval = getattr(settings, "DYNAMIC_QR_INTERVAL_SECONDS", 20)
     window = get_dynamic_qr_window(interval) + window_offset
-    secret = getattr(settings, "SECRET_KEY", "fallback-secret")
+    salt = getattr(settings, "ATTENDANCE_QR_SALT", "") or getattr(settings, "SECRET_KEY", "fallback-secret")
+    secret = f"{salt}:qr_dyn_v1"
     payload = f"session:{session_id}:win:{window}".encode("utf-8")
     token_hash = hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()[:24]
     return f"dyn_{session_id}_{token_hash}"
@@ -109,6 +110,7 @@ def get_dynamic_qr_info(session_id: int) -> dict:
         "token": generate_dynamic_qr_token(session_id, window_offset=0),
         "interval_seconds": interval,
         "expires_in_seconds": seconds_remaining,
+        "server_timestamp": now_ts,
     }
 
 

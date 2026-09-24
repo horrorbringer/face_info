@@ -3,6 +3,8 @@ import logging
 import secrets
 import numpy as np
 from django.conf import settings
+from django.core.cache import cache
+from django.db import IntegrityError, transaction
 from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -149,6 +151,10 @@ class StudentTodayScheduleView(APIView):
         today = timezone.localdate()
         sessions = Session.objects.filter(class_room=student.class_room, date=today).order_by("start_time")
 
+        from .tasks import sync_sessions_lifecycle
+        sync_sessions_lifecycle(sessions)
+        sessions = Session.objects.filter(class_room=student.class_room, date=today).order_by("start_time")
+
         records = AttendanceRecord.objects.filter(student=student, session__in=sessions, is_deleted=False)
         record_map = {r.session_id: r for r in records}
 
@@ -156,7 +162,14 @@ class StudentTodayScheduleView(APIView):
         schedule_data = []
         for s in sessions:
             rec = record_map.get(s.id)
-            is_qr_active = bool(s.qr_token and s.qr_token_expires_at and now < s.qr_token_expires_at and not s.ended_at)
+            is_cancelled = s.qr_token == "CANCELLED"
+            is_qr_active = bool(
+                s.qr_token
+                and s.qr_token_expires_at
+                and now < s.qr_token_expires_at
+                and not s.ended_at
+                and not is_cancelled
+            )
             schedule_data.append({
                 "id": s.id,
                 "class_room": s.class_room,
@@ -165,6 +178,7 @@ class StudentTodayScheduleView(APIView):
                 "end_time": s.end_time,
                 "is_qr_active": is_qr_active,
                 "is_checked_in": rec is not None,
+                "is_cancelled": is_cancelled,
                 "my_status": rec.status if rec else None,
                 "my_method": rec.method if rec else None,
                 "checked_in_at": rec.checked_in_at if rec else None,
@@ -172,6 +186,7 @@ class StudentTodayScheduleView(APIView):
 
         serializer = StudentSessionScheduleSerializer(schedule_data, many=True)
         return Response(serializer.data)
+
 
 
 class StudentAlertsMineView(APIView):
@@ -216,8 +231,11 @@ class QRCheckInView(APIView):
         qr_token = serializer.validated_data["qr_token"].strip()
 
         if not hasattr(request.user, "student_profile"):
-            return Response({"error": "Only registered students can check in via QR code."}, status=status.HTTP_403_FORBIDDEN)
+            return Response({"error": "Only registered students can check in via QR code.", "code": "UNAUTHORIZED"}, status=status.HTTP_403_FORBIDDEN)
         student = request.user.student_profile
+        if not student.is_active:
+            return Response({"error": "Student account is suspended or inactive. Check-in is not permitted.", "code": "STUDENT_INACTIVE"}, status=status.HTTP_403_FORBIDDEN)
+
 
         session = None
         if qr_token.startswith("dyn_"):
@@ -231,56 +249,135 @@ class QRCheckInView(APIView):
 
             if not session or not verify_dynamic_qr_token(session.id, qr_token):
                 return Response(
-                    {"error": "Dynamic QR code has expired or is invalid. Please scan the current code on screen."},
+                    {
+                        "error": "Dynamic QR code has expired or is invalid. Please scan the current code on screen.",
+                        "code": "QR_EXPIRED",
+                    },
                     status=status.HTTP_400_BAD_REQUEST
                 )
         else:
             try:
                 session = Session.objects.select_related("class_room").get(qr_token=qr_token)
             except Session.DoesNotExist:
-                return Response({"error": "Invalid QR code."}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({
+                    "error": "Invalid QR code.",
+                    "code": "INVALID_QR"
+                }, status=status.HTTP_400_BAD_REQUEST)
 
             now = timezone.now()
             if not session.qr_token_expires_at or now > session.qr_token_expires_at:
-                return Response({"error": "QR code has expired. Ask your teacher for a refreshed code."}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({
+                    "error": "QR code has expired. Ask your teacher for a refreshed code.",
+                    "code": "QR_EXPIRED"
+                }, status=status.HTTP_400_BAD_REQUEST)
 
         now = timezone.now()
         if session.ended_at:
-            return Response({"error": "This session has already ended."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({
+                "error": "This session has already ended.",
+                "code": "SESSION_ENDED"
+            }, status=status.HTTP_400_BAD_REQUEST)
 
-        # Enforce student enrollment in this session's class (if class_room set)
-        if student.class_room and student.class_room_id != session.class_room_id:
-            return Response({"error": f"You are not enrolled in {session.class_room.name}."}, status=status.HTTP_403_FORBIDDEN)
-
-        # Calculate late vs present based on session start_time + threshold
-        late_threshold_mins = getattr(settings, "LATE_THRESHOLD_MINUTES", 15)
+        # Guard against Zombie sessions (time travel / unended sessions after class duration)
         session_start_datetime = timezone.make_aware(
             datetime.datetime.combine(session.date, session.start_time),
             timezone.get_current_timezone()
         )
-        late_cutoff = session_start_datetime + datetime.timedelta(minutes=late_threshold_mins)
+        max_duration_hours = getattr(settings, "SESSION_MAX_DURATION_HOURS", 4)
+        session_cutoff = session_start_datetime + datetime.timedelta(hours=max_duration_hours)
+        if session.date < now.date() or now > session_cutoff:
+            if not session.ended_at:
+                session.ended_at = now
+                session.save(update_fields=["ended_at"])
+            return Response({
+                "error": "This session has expired. Check-in is no longer allowed.",
+                "code": "SESSION_EXPIRED"
+            }, status=status.HTTP_400_BAD_REQUEST)
 
+        # Enforce student enrollment in this session's class
+        if student.class_room_id != session.class_room_id:
+            return Response({
+                "error": f"You are not enrolled in {session.class_room.name}.",
+                "code": "NOT_ENROLLED"
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        # Guard against Bilocation / Impossible Travel (checking in to 2 different classes within 15 mins)
+        fifteen_mins_ago = now - datetime.timedelta(minutes=15)
+        conflicting_checkin = AttendanceRecord.objects.filter(
+            student=student,
+            checked_in_at__gte=fifteen_mins_ago,
+            is_deleted=False
+        ).exclude(session=session).select_related("session__class_room").first()
+
+        if conflicting_checkin:
+            return Response({
+                "error": f"Impossible check-in: You already checked in to {conflicting_checkin.session.class_room.name} less than 15 minutes ago.",
+                "code": "IMPOSSIBLE_TRAVEL"
+            }, status=status.HTTP_409_CONFLICT)
+
+        # Guard against Device Hopping (Buddy Punching on a single phone)
+        device_id = request.data.get("device_id")
+        if device_id:
+            device_cache_key = f"session_device:{session.id}:{device_id}"
+            bound_student_id = cache.get(device_cache_key)
+            if bound_student_id and bound_student_id != student.id:
+                return Response({
+                    "error": "This physical device has already been used to check in another student for this session.",
+                    "code": "DEVICE_REUSE_BLOCKED"
+                }, status=status.HTTP_409_CONFLICT)
+            cache.set(device_cache_key, student.id, timeout=43200)
+
+        # Calculate late vs present based on session start_time + threshold (with late-teacher grace period)
+        late_threshold_mins = getattr(settings, "LATE_THRESHOLD_MINUTES", 15)
+        effective_start = session_start_datetime
+        if session.qr_token_expires_at:
+            approx_activation = session.qr_token_expires_at - datetime.timedelta(minutes=30)
+            if approx_activation > session_start_datetime:
+                effective_start = approx_activation
+
+        late_cutoff = effective_start + datetime.timedelta(minutes=late_threshold_mins)
         record_status = "late" if now > late_cutoff else "present"
 
-        record, created = AttendanceRecord.objects.get_or_create(
-            student=student,
-            session=session,
-            defaults={
-                "status": record_status,
-                "method": "qr",
-                "is_deleted": False,
-            }
-        )
+        try:
+            with transaction.atomic():
+                record, created = AttendanceRecord.objects.get_or_create(
+                    student=student,
+                    session=session,
+                    defaults={
+                        "status": record_status,
+                        "method": "qr",
+                        "is_deleted": False,
+                    }
+                )
+        except IntegrityError:
+            record = AttendanceRecord.objects.get(student=student, session=session)
+            created = False
 
         if not created:
             if record.is_deleted:
                 record.is_deleted = False
                 record.status = record_status
                 record.method = "qr"
+                record.checked_in_at = now
+                record.save()
+            elif record.edited_by is not None:
+                # Teacher Manual Override is Sovereign: automated check-in cannot silently override teacher's mark
+                return Response({
+                    "error": f"Attendance was manually marked by {record.edited_by.username} as '{record.status}'. Automated check-in cannot override teacher's record.",
+                    "code": "TEACHER_LOCKED",
+                    "status": record.status,
+                    "record": AttendanceRecordSerializer(record).data,
+                }, status=status.HTTP_409_CONFLICT)
+            elif record.status == "absent":
+                # Upgrade from automated absent mark to late/present upon late arrival or session reopen
+                record.status = record_status
+                record.method = "qr"
+                record.checked_in_at = now
                 record.save()
             else:
                 return Response({
-                    "message": "Already checked in for this session.",
+                    "message": f"Already checked in as '{record.status}'.",
+                    "code": "ALREADY_CHECKED_IN",
                     "record": AttendanceRecordSerializer(record).data,
                 }, status=status.HTTP_200_OK)
 
@@ -309,6 +406,7 @@ class StudentAttendanceHistoryView(APIView):
         student = request.user.student_profile
         records = (
             AttendanceRecord.objects.filter(student=student, is_deleted=False)
+            .exclude(session__qr_token="CANCELLED")
             .select_related("session", "session__class_room")
             .order_by("-session__date", "-session__start_time")
         )
@@ -346,6 +444,23 @@ class StudentAttendanceHistoryView(APIView):
 # Teacher Session Management & Overrides (Phases 2, 3, 6)
 # ----------------------------------------------------------------------
 
+def is_authorized_teacher_or_staff(user, classroom=None):
+    """
+    Validates that the authenticated user is either a Django staff/admin
+    or an assigned Teacher. If classroom is provided, verifies ownership.
+    Explicitly rejects students and non-assigned teachers.
+    """
+    if not user or not user.is_authenticated:
+        return False
+    if user.is_staff:
+        return True
+    if hasattr(user, "teacher_profile"):
+        if classroom is None:
+            return True
+        return classroom.teacher_id is not None and classroom.teacher_id == user.teacher_profile.id
+    return False
+
+
 class TeacherTodayClassesView(APIView):
     """
     GET /api/teacher/classes/today/
@@ -354,10 +469,23 @@ class TeacherTodayClassesView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
+        if not is_authorized_teacher_or_staff(request.user):
+            return Response(
+                {"error": "Only teachers and staff can access the teaching schedule.", "code": "UNAUTHORIZED"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         today = timezone.localdate()
         sessions = Session.objects.filter(date=today).select_related("class_room")
-        if hasattr(request.user, "teacher_profile") and not request.user.is_staff:
+        if not request.user.is_staff:
             sessions = sessions.filter(class_room__teacher=request.user.teacher_profile)
+
+        from .tasks import sync_sessions_lifecycle
+        sync_sessions_lifecycle(sessions)
+        sessions = Session.objects.filter(date=today).select_related("class_room")
+        if not request.user.is_staff:
+            sessions = sessions.filter(class_room__teacher=request.user.teacher_profile)
+
         serializer = SessionSerializer(sessions, many=True)
         return Response(serializer.data)
 
@@ -370,11 +498,9 @@ class SessionRotateQRView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, session_id):
-        session = get_object_or_404(Session, id=session_id)
-        # Check permissions: teacher of class or staff
-        if hasattr(request.user, "teacher_profile") and not request.user.is_staff:
-            if session.class_room.teacher != request.user.teacher_profile:
-                return Response({"error": "Not authorized to manage this session."}, status=status.HTTP_403_FORBIDDEN)
+        session = get_object_or_404(Session.objects.select_related("class_room"), id=session_id)
+        if not is_authorized_teacher_or_staff(request.user, session.class_room):
+            return Response({"error": "Not authorized to manage this session.", "code": "UNAUTHORIZED"}, status=status.HTTP_403_FORBIDDEN)
 
         expiry_minutes = int(request.data.get("expiry_minutes", 10))
         session.qr_token = secrets.token_urlsafe(32)
@@ -398,13 +524,12 @@ class SessionDynamicQRView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, session_id):
-        session = get_object_or_404(Session, id=session_id)
-        if hasattr(request.user, "teacher_profile") and not request.user.is_staff:
-            if session.class_room.teacher != request.user.teacher_profile:
-                return Response({"error": "Not authorized to manage this session."}, status=status.HTTP_403_FORBIDDEN)
+        session = get_object_or_404(Session.objects.select_related("class_room"), id=session_id)
+        if not is_authorized_teacher_or_staff(request.user, session.class_room):
+            return Response({"error": "Not authorized to manage this session.", "code": "UNAUTHORIZED"}, status=status.HTTP_403_FORBIDDEN)
 
         if session.ended_at:
-            return Response({"error": "This session has already ended."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "This session has already ended.", "code": "SESSION_ENDED"}, status=status.HTTP_400_BAD_REQUEST)
 
         info = get_dynamic_qr_info(session.id)
         info["class_room"] = session.class_room.name
@@ -425,11 +550,10 @@ def session_live_qr(request, session_id):
         from django.contrib.auth.views import redirect_to_login
         return redirect_to_login(request.get_full_path())
 
-    session = get_object_or_404(Session, id=session_id)
-    if hasattr(request.user, "teacher_profile") and not request.user.is_staff:
-        if session.class_room.teacher != request.user.teacher_profile:
-            from django.core.exceptions import PermissionDenied
-            raise PermissionDenied("Not authorized to display QR for this session.")
+    session = get_object_or_404(Session.objects.select_related("class_room"), id=session_id)
+    if not is_authorized_teacher_or_staff(request.user, session.class_room):
+        from django.core.exceptions import PermissionDenied
+        raise PermissionDenied("Not authorized to display QR for this session.")
 
     return render(request, "attendance/live_qr.html", {
         "session": session,
@@ -446,10 +570,9 @@ class SessionEndView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, session_id):
-        session = get_object_or_404(Session, id=session_id)
-        if hasattr(request.user, "teacher_profile") and not request.user.is_staff:
-            if session.class_room.teacher != request.user.teacher_profile:
-                return Response({"error": "Not authorized to end this session."}, status=status.HTTP_403_FORBIDDEN)
+        session = get_object_or_404(Session.objects.select_related("class_room"), id=session_id)
+        if not is_authorized_teacher_or_staff(request.user, session.class_room):
+            return Response({"error": "Not authorized to end this session.", "code": "UNAUTHORIZED"}, status=status.HTTP_403_FORBIDDEN)
 
         if not session.ended_at:
             session.ended_at = timezone.now()
@@ -472,6 +595,67 @@ class SessionEndView(APIView):
         })
 
 
+class SessionReopenView(APIView):
+    """
+    POST /api/teacher/sessions/{id}/reopen/
+    Reopens an accidentally ended session within a 30-minute grace window.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, session_id):
+        session = get_object_or_404(Session.objects.select_related("class_room"), id=session_id)
+        if not is_authorized_teacher_or_staff(request.user, session.class_room):
+            return Response({"error": "Not authorized to manage this session.", "code": "UNAUTHORIZED"}, status=status.HTTP_403_FORBIDDEN)
+
+        if not session.ended_at:
+            return Response({
+                "message": "Session is already active.",
+                "session": SessionSerializer(session).data
+            }, status=status.HTTP_200_OK)
+
+        now = timezone.now()
+        # Allow reopen within 30-minute grace window
+        if now - session.ended_at > datetime.timedelta(minutes=30):
+            return Response({
+                "error": "Cannot reopen a session that ended more than 30 minutes ago.",
+                "code": "REOPEN_WINDOW_EXPIRED"
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        session.ended_at = None
+        session.qr_token_expires_at = now + datetime.timedelta(minutes=30)
+        session.save(update_fields=["ended_at", "qr_token_expires_at"])
+
+        return Response({
+            "message": "Session reopened successfully. Attendance check-in is active again.",
+            "session": SessionSerializer(session).data
+        }, status=status.HTTP_200_OK)
+
+
+class SessionCancelView(APIView):
+    """
+    POST /api/teacher/sessions/{id}/cancel/
+    Cancels a scheduled or active session (e.g. holiday, teacher absence).
+    Marks session as cancelled and prevents automatic absence alerts from triggering.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, session_id):
+        session = get_object_or_404(Session.objects.select_related("class_room"), id=session_id)
+        if not is_authorized_teacher_or_staff(request.user, session.class_room):
+            return Response({"error": "Not authorized to cancel this session.", "code": "UNAUTHORIZED"}, status=status.HTTP_403_FORBIDDEN)
+
+        now = timezone.now()
+        session.qr_token = "CANCELLED"
+        session.ended_at = now
+        session.save(update_fields=["qr_token", "ended_at"])
+
+        return Response({
+            "message": "Session has been cancelled. No absence alerts will be dispatched.",
+            "session_id": session.id,
+            "status": "cancelled",
+        }, status=status.HTTP_200_OK)
+
+
 class AttendanceOverrideView(APIView):
     """
     PATCH /api/teacher/attendance/{id}/
@@ -480,7 +664,10 @@ class AttendanceOverrideView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def patch(self, request, record_id):
-        record = get_object_or_404(AttendanceRecord, id=record_id)
+        record = get_object_or_404(AttendanceRecord.objects.select_related("session__class_room"), id=record_id)
+        if not is_authorized_teacher_or_staff(request.user, record.session.class_room):
+            return Response({"error": "Not authorized to modify attendance for this classroom.", "code": "UNAUTHORIZED"}, status=status.HTTP_403_FORBIDDEN)
+
         serializer = AttendanceOverrideSerializer(record, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save(edited_by=request.user)
@@ -490,7 +677,7 @@ class AttendanceOverrideView(APIView):
 class TeacherSessionCreateView(APIView):
     """
     POST /api/teacher/sessions/
-    Creates a new session for a teacher's classroom on demand.
+    Creates a new session for a teacher's classroom on demand with conflict detection.
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -499,9 +686,50 @@ class TeacherSessionCreateView(APIView):
         serializer.is_valid(raise_exception=True)
         classroom = serializer.validated_data["class_room"]
 
-        if hasattr(request.user, "teacher_profile") and not request.user.is_staff:
-            if classroom.teacher != request.user.teacher_profile:
-                return Response({"error": "Not authorized to create sessions for this classroom."}, status=status.HTTP_403_FORBIDDEN)
+        if not is_authorized_teacher_or_staff(request.user, classroom):
+            return Response({"error": "Not authorized to create sessions for this classroom.", "code": "UNAUTHORIZED"}, status=status.HTTP_403_FORBIDDEN)
+
+        target_date = serializer.validated_data.get("date", timezone.now().date())
+        start_time = serializer.validated_data["start_time"]
+        end_time = serializer.validated_data["end_time"]
+
+        if start_time >= end_time:
+            return Response({
+                "error": "start_time must be strictly earlier than end_time.",
+                "code": "INVALID_TIME_RANGE"
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check for overlapping active sessions in this physical classroom
+        overlapping_classroom = Session.objects.filter(
+            class_room=classroom,
+            date=target_date,
+            start_time__lt=end_time,
+            end_time__gt=start_time,
+        ).exclude(qr_token="CANCELLED").first()
+
+        if overlapping_classroom:
+            if overlapping_classroom.start_time == start_time and overlapping_classroom.end_time == end_time:
+                # Idempotent return if client double-tapped create
+                return Response(SessionSerializer(overlapping_classroom).data, status=status.HTTP_200_OK)
+            return Response({
+                "error": f"Classroom '{classroom.name}' already has a session scheduled from {overlapping_classroom.start_time.strftime('%H:%M')} to {overlapping_classroom.end_time.strftime('%H:%M')}.",
+                "code": "CLASSROOM_OVERLAP_CONFLICT"
+            }, status=status.HTTP_409_CONFLICT)
+
+        # Check for teacher scheduling overlap in another classroom
+        if classroom.teacher:
+            overlapping_teacher = Session.objects.filter(
+                class_room__teacher=classroom.teacher,
+                date=target_date,
+                start_time__lt=end_time,
+                end_time__gt=start_time,
+            ).exclude(qr_token="CANCELLED").exclude(class_room=classroom).first()
+
+            if overlapping_teacher:
+                return Response({
+                    "error": f"Teacher is already scheduled to teach in '{overlapping_teacher.class_room.name}' from {overlapping_teacher.start_time.strftime('%H:%M')} to {overlapping_teacher.end_time.strftime('%H:%M')}.",
+                    "code": "TEACHER_SCHEDULE_CONFLICT"
+                }, status=status.HTTP_409_CONFLICT)
 
         session = serializer.save()
         return Response(SessionSerializer(session).data, status=status.HTTP_201_CREATED)
@@ -516,9 +744,9 @@ class TeacherSessionRosterView(APIView):
 
     def get(self, request, session_id):
         session = get_object_or_404(Session.objects.select_related("class_room", "class_room__teacher"), id=session_id)
-        if hasattr(request.user, "teacher_profile") and not request.user.is_staff:
-            if session.class_room.teacher != request.user.teacher_profile:
-                return Response({"error": "Not authorized to view roster for this session."}, status=status.HTTP_403_FORBIDDEN)
+        if not is_authorized_teacher_or_staff(request.user, session.class_room):
+            return Response({"error": "Not authorized to view roster for this session.", "code": "UNAUTHORIZED"}, status=status.HTTP_403_FORBIDDEN)
+
 
         classroom = session.class_room
         students = classroom.students.filter(is_active=True).order_by("full_name")
@@ -531,22 +759,21 @@ class TeacherSessionRosterView(APIView):
 
         for st in students:
             rec = record_map.get(st.id)
-            if rec:
+            if rec and not rec.is_deleted:
                 att_status = rec.status
                 method = rec.method
                 checked_in_at = rec.checked_in_at
                 confidence_score = rec.confidence_score
                 record_id = rec.id
-                is_deleted = rec.is_deleted
-                if not is_deleted:
-                    summary[att_status] = summary.get(att_status, 0) + 1
+                is_deleted = False
+                summary[att_status] = summary.get(att_status, 0) + 1
             else:
                 att_status = "unmarked"
                 method = None
                 checked_in_at = None
                 confidence_score = None
-                record_id = None
-                is_deleted = False
+                record_id = rec.id if rec else None
+                is_deleted = rec.is_deleted if rec else False
                 summary["unmarked"] += 1
 
             roster.append({
@@ -590,12 +817,11 @@ class TeacherSessionLiveFeedView(APIView):
             Session.objects.select_related("class_room", "class_room__teacher"),
             id=session_id
         )
-        if hasattr(request.user, "teacher_profile") and not request.user.is_staff:
-            if session.class_room.teacher != request.user.teacher_profile:
-                return Response(
-                    {"error": "Not authorized to view live attendance for this session."},
-                    status=status.HTTP_403_FORBIDDEN
-                )
+        if not is_authorized_teacher_or_staff(request.user, session.class_room):
+            return Response(
+                {"error": "Not authorized to view live attendance for this session.", "code": "UNAUTHORIZED"},
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         total_enrolled = session.class_room.students.filter(is_active=True).count()
         records_qs = AttendanceRecord.objects.filter(
@@ -661,9 +887,8 @@ class TeacherSessionBulkAttendanceView(APIView):
 
     def post(self, request, session_id):
         session = get_object_or_404(Session.objects.select_related("class_room", "class_room__teacher"), id=session_id)
-        if hasattr(request.user, "teacher_profile") and not request.user.is_staff:
-            if session.class_room.teacher != request.user.teacher_profile:
-                return Response({"error": "Not authorized to modify attendance for this session."}, status=status.HTTP_403_FORBIDDEN)
+        if not is_authorized_teacher_or_staff(request.user, session.class_room):
+            return Response({"error": "Not authorized to modify attendance for this session.", "code": "UNAUTHORIZED"}, status=status.HTTP_403_FORBIDDEN)
 
         serializer = BulkAttendanceOverrideSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -672,34 +897,35 @@ class TeacherSessionBulkAttendanceView(APIView):
         updated_count = 0
         errors = []
 
-        for item in items:
-            student_id = item.get("student_id")
-            student_pk = item.get("student_pk")
-            new_status = item["status"]
+        with transaction.atomic():
+            for item in items:
+                student_id = item.get("student_id")
+                student_pk = item.get("student_pk")
+                new_status = item["status"]
 
-            try:
-                if student_id:
-                    student = Student.objects.get(student_id=student_id, class_room=session.class_room)
-                elif student_pk:
-                    student = Student.objects.get(id=student_pk, class_room=session.class_room)
-                else:
-                    errors.append("Provide either student_id or student_pk.")
+                try:
+                    if student_id:
+                        student = Student.objects.get(student_id=student_id, class_room=session.class_room)
+                    elif student_pk:
+                        student = Student.objects.get(id=student_pk, class_room=session.class_room)
+                    else:
+                        errors.append("Provide either student_id or student_pk.")
+                        continue
+                except Student.DoesNotExist:
+                    errors.append(f"Student {student_id or student_pk} not found in this classroom.")
                     continue
-            except Student.DoesNotExist:
-                errors.append(f"Student {student_id or student_pk} not found in this classroom.")
-                continue
 
-            AttendanceRecord.objects.update_or_create(
-                student=student,
-                session=session,
-                defaults={
-                    "status": new_status,
-                    "method": "manual",
-                    "is_deleted": False,
-                    "edited_by": request.user,
-                }
-            )
-            updated_count += 1
+                AttendanceRecord.objects.update_or_create(
+                    student=student,
+                    session=session,
+                    defaults={
+                        "status": new_status,
+                        "method": "manual",
+                        "is_deleted": False,
+                        "edited_by": request.user,
+                    }
+                )
+                updated_count += 1
 
         return Response({
             "message": f"Successfully updated {updated_count} attendance records.",
@@ -720,11 +946,22 @@ class FaceEnrollView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        # Identify target student
+        # Identify target student with role & tampering guard
         target_student = None
         if hasattr(request.user, "student_profile"):
             target_student = request.user.student_profile
+            # Anti-tampering guard: students cannot silently re-enroll / substitute photos
+            if target_student.face_embeddings.count() > 0:
+                return Response({
+                    "error": "Face biometric is already enrolled. For photo updates, please visit the administration desk.",
+                    "code": "ALREADY_ENROLLED"
+                }, status=status.HTTP_403_FORBIDDEN)
         elif "student_id" in request.data:
+            if not request.user.is_staff and not hasattr(request.user, "teacher_profile"):
+                return Response({
+                    "error": "Only authorized staff or teachers can enroll biometric data for other students.",
+                    "code": "UNAUTHORIZED"
+                }, status=status.HTTP_403_FORBIDDEN)
             target_student = get_object_or_404(Student, student_id=request.data["student_id"])
         else:
             return Response({"error": "Specify student_id for enrollment."}, status=status.HTTP_400_BAD_REQUEST)
@@ -805,9 +1042,12 @@ class FaceCheckInView(APIView):
                 "is_spoof": "Spoof" in err_str or "Planar" in err_str or "moiré" in err_str
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # Narrow search space to students in the session's class (or all active students if no session)
+        # Narrow search space to active students with valid biometric consent
         target = np.asarray(target_vector, dtype=np.float32)
-        candidates_qs = StudentFace.objects.select_related("student").filter(student__is_active=True)
+        candidates_qs = StudentFace.objects.select_related("student").filter(
+            student__is_active=True,
+            student__consent_given_at__isnull=False
+        )
         if session:
             candidates_qs = candidates_qs.filter(student__class_room=session.class_room)
 
@@ -826,7 +1066,7 @@ class FaceCheckInView(APIView):
                 best_score = sim
                 best_student = candidate.student
 
-        threshold = getattr(settings, "MATCH_THRESHOLD", 0.5)
+        threshold = getattr(settings, "MATCH_THRESHOLD", 0.60)
 
         if not best_student or best_score < threshold:
             return Response({
@@ -837,37 +1077,151 @@ class FaceCheckInView(APIView):
                 "message": "Face not recognized. Please use QR check-in or request teacher assistance.",
             }, status=status.HTTP_200_OK)
 
+        # Kiosk debounce: if the same student was processed in the last 5 seconds, return cached response
+        debounce_key = f"kiosk_debounce:{session.id if session else 'none'}:{best_student.id}"
+        cached_response = cache.get(debounce_key)
+        if cached_response:
+            return Response(cached_response, status=status.HTTP_200_OK)
+
+        # Verify authenticated student matches recognized face (if mobile app check-in)
+        if hasattr(request.user, "student_profile"):
+            if best_student.id != request.user.student_profile.id:
+                return Response({
+                    "matched": False,
+                    "student_id": best_student.student_id,
+                    "student_name": best_student.full_name,
+                    "error": f"Face matches student '{best_student.full_name}', but you are logged in as '{request.user.student_profile.full_name}'.",
+                    "code": "FACE_IDENTITY_MISMATCH",
+                }, status=status.HTTP_403_FORBIDDEN)
+
         # If session is active, record attendance
         attendance_info = None
         if session:
             now = timezone.now()
-            late_threshold_mins = getattr(settings, "LATE_THRESHOLD_MINUTES", 15)
+            if session.ended_at:
+                return Response({
+                    "matched": True,
+                    "student_id": best_student.student_id,
+                    "student_name": best_student.full_name,
+                    "error": "This session has already ended.",
+                    "code": "SESSION_ENDED"
+                }, status=status.HTTP_400_BAD_REQUEST)
+
             session_start_datetime = timezone.make_aware(
                 datetime.datetime.combine(session.date, session.start_time),
                 timezone.get_current_timezone()
             )
-            record_status = "late" if now > (session_start_datetime + datetime.timedelta(minutes=late_threshold_mins)) else "present"
+            max_duration_hours = getattr(settings, "SESSION_MAX_DURATION_HOURS", 4)
+            session_cutoff = session_start_datetime + datetime.timedelta(hours=max_duration_hours)
+            if session.date < now.date() or now > session_cutoff:
+                if not session.ended_at:
+                    session.ended_at = now
+                    session.save(update_fields=["ended_at"])
+                return Response({
+                    "matched": True,
+                    "student_id": best_student.student_id,
+                    "student_name": best_student.full_name,
+                    "error": "This session has expired. Check-in is no longer allowed.",
+                    "code": "SESSION_EXPIRED"
+                }, status=status.HTTP_400_BAD_REQUEST)
 
-            record, _ = AttendanceRecord.objects.get_or_create(
+            # Guard against Bilocation / Impossible Travel
+            fifteen_mins_ago = now - datetime.timedelta(minutes=15)
+            conflicting_checkin = AttendanceRecord.objects.filter(
                 student=best_student,
-                session=session,
-                defaults={
-                    "status": record_status,
-                    "method": "face",
-                    "confidence_score": round(best_score, 4),
-                    "is_deleted": False,
-                }
-            )
+                checked_in_at__gte=fifteen_mins_ago,
+                is_deleted=False
+            ).exclude(session=session).select_related("session__class_room").first()
+
+            if conflicting_checkin:
+                return Response({
+                    "matched": True,
+                    "student_id": best_student.student_id,
+                    "student_name": best_student.full_name,
+                    "error": f"Impossible check-in: Already checked in to {conflicting_checkin.session.class_room.name} less than 15 minutes ago.",
+                    "code": "IMPOSSIBLE_TRAVEL"
+                }, status=status.HTTP_409_CONFLICT)
+
+            # Guard against Device Hopping (Buddy Punching on a single phone)
+            device_id = request.data.get("device_id")
+            if device_id:
+                device_cache_key = f"session_device:{session.id}:{device_id}"
+                bound_student_id = cache.get(device_cache_key)
+                if bound_student_id and bound_student_id != best_student.id:
+                    return Response({
+                        "matched": True,
+                        "student_id": best_student.student_id,
+                        "student_name": best_student.full_name,
+                        "error": "This physical device has already been used to check in another student for this session.",
+                        "code": "DEVICE_REUSE_BLOCKED"
+                    }, status=status.HTTP_409_CONFLICT)
+                cache.set(device_cache_key, best_student.id, timeout=43200)
+
+            late_threshold_mins = getattr(settings, "LATE_THRESHOLD_MINUTES", 15)
+            effective_start = session_start_datetime
+            if session.qr_token_expires_at:
+                approx_activation = session.qr_token_expires_at - datetime.timedelta(minutes=30)
+                if approx_activation > session_start_datetime:
+                    effective_start = approx_activation
+
+            late_cutoff = effective_start + datetime.timedelta(minutes=late_threshold_mins)
+            record_status = "late" if now > late_cutoff else "present"
+
+            try:
+                with transaction.atomic():
+                    record, created = AttendanceRecord.objects.get_or_create(
+                        student=best_student,
+                        session=session,
+                        defaults={
+                            "status": record_status,
+                            "method": "face",
+                            "confidence_score": round(best_score, 4),
+                            "is_deleted": False,
+                        }
+                    )
+            except IntegrityError:
+                record = AttendanceRecord.objects.get(student=best_student, session=session)
+                created = False
+
+            if not created:
+                if record.is_deleted:
+                    record.is_deleted = False
+                    record.status = record_status
+                    record.method = "face"
+                    record.confidence_score = round(best_score, 4)
+                    record.checked_in_at = now
+                    record.save()
+                elif record.edited_by is not None:
+                    return Response({
+                        "matched": True,
+                        "student_id": best_student.student_id,
+                        "student_name": best_student.full_name,
+                        "error": f"Attendance was manually marked by {record.edited_by.username} as '{record.status}'. Face check-in cannot override teacher's record.",
+                        "code": "TEACHER_LOCKED",
+                        "status": record.status,
+                        "attendance": AttendanceRecordSerializer(record).data,
+                    }, status=status.HTTP_409_CONFLICT)
+                elif record.status == "absent":
+                    # Upgrade from automated absent mark to late/present upon face check-in
+                    record.status = record_status
+                    record.method = "face"
+                    record.confidence_score = round(best_score, 4)
+                    record.checked_in_at = now
+                    record.save()
+
             attendance_info = AttendanceRecordSerializer(record).data
 
-        return Response({
+        response_data = {
             "matched": True,
             "student_id": best_student.student_id,
             "student_name": best_student.full_name,
             "confidence_score": round(best_score, 4),
             "liveness": liveness,
             "attendance": attendance_info,
-        }, status=status.HTTP_200_OK)
+        }
+        cache.set(debounce_key, response_data, timeout=5)
+        return Response(response_data, status=status.HTTP_200_OK)
+
 
 
 # ----------------------------------------------------------------------
@@ -883,10 +1237,21 @@ class ClassReportView(APIView):
 
     def get(self, request, class_id):
         classroom = get_object_or_404(ClassRoom, id=class_id)
-        total_students = classroom.students.filter(is_active=True).count()
-        total_sessions = classroom.sessions.count()
+        if not is_authorized_teacher_or_staff(request.user, classroom):
+            return Response({"error": "Not authorized to view analytics for this classroom.", "code": "UNAUTHORIZED"}, status=status.HTTP_403_FORBIDDEN)
 
-        records = AttendanceRecord.objects.filter(session__class_room=classroom, is_deleted=False)
+        total_students = classroom.students.filter(is_active=True).count()
+
+        today = timezone.localdate()
+        conducted_sessions_q = (Q(date__lt=today) | Q(date=today, start_time__lte=timezone.localtime().time())) & ~Q(qr_token="CANCELLED")
+        total_sessions = classroom.sessions.filter(conducted_sessions_q).count()
+
+        records = AttendanceRecord.objects.filter(
+            session__class_room=classroom,
+            is_deleted=False
+        ).exclude(session__qr_token="CANCELLED").filter(
+            session__date__lte=today
+        )
         counts = records.aggregate(
             total_records=Count("id"),
             present_count=Count("id", filter=Q(status="present")),
@@ -928,9 +1293,13 @@ class ClassReportExportCSVView(APIView):
         from django.http import HttpResponse
 
         classroom = get_object_or_404(ClassRoom, id=class_id)
+        if not is_authorized_teacher_or_staff(request.user, classroom):
+            return Response({"error": "Not authorized to export attendance logs for this classroom.", "code": "UNAUTHORIZED"}, status=status.HTTP_403_FORBIDDEN)
+
         records = (
             AttendanceRecord.objects.select_related("student", "session")
             .filter(session__class_room=classroom, is_deleted=False)
+            .exclude(session__qr_token="CANCELLED")
             .order_by("-session__date", "-session__start_time", "student__student_id")
         )
 
@@ -993,7 +1362,24 @@ class StudentReportView(APIView):
 
     def get(self, request, student_id):
         student = get_object_or_404(Student, id=student_id)
-        records = AttendanceRecord.objects.filter(student=student, is_deleted=False)
+
+        # Allow: Staff, Teacher of student's classroom, or the student themselves
+        is_self = hasattr(request.user, "student_profile") and request.user.student_profile.id == student.id
+        is_class_teacher = (
+            student.class_room
+            and hasattr(request.user, "teacher_profile")
+            and student.class_room.teacher_id == request.user.teacher_profile.id
+        )
+        if not (request.user.is_staff or is_self or is_class_teacher):
+            return Response({"error": "Not authorized to view this student's report.", "code": "UNAUTHORIZED"}, status=status.HTTP_403_FORBIDDEN)
+
+        today = timezone.localdate()
+        records = AttendanceRecord.objects.filter(
+            student=student,
+            is_deleted=False
+        ).exclude(session__qr_token="CANCELLED").filter(
+            session__date__lte=today
+        )
         counts = records.aggregate(
             total_records=Count("id"),
             present_count=Count("id", filter=Q(status="present")),
@@ -1014,6 +1400,7 @@ class StudentReportView(APIView):
             "absent_count": counts["absent_count"],
             "attendance_rate": present_pct,
         })
+
 
 
 # ----------------------------------------------------------------------

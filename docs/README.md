@@ -9,7 +9,7 @@ Welcome to the central documentation index for the Smart Attendance System. This
 | Role | Team Member | Primary Documentation |
 | :--- | :--- | :--- |
 | **Backend Developers** | Meas Vanny, Sat Chhumseak | [Architecture & Logic Guide](architecture_and_business_logic.md), [API Reference](api_reference.md) |
-| **Mobile Developer (Flutter)** | Nov Thearith | [Mobile API Guide](mobile_api_guide.md), [API Reference](api_reference.md) |
+| **Mobile Developer (Flutter)** | Nov Thearith | [Mobile Build Guide](mobile_build_guide.md), [Mobile API Guide](mobile_api_guide.md), [API Reference](api_reference.md) |
 | **UI/UX Designer** | Chhom Rosvisal | [System Capabilities](system_capabilities.md), [Product Specification](smart_attendance_system_spec.md) |
 | **Marketing & QA Testing** | Sem Sreyneat | [Testing & QA Guide](testing_guide.md), [System Capabilities](system_capabilities.md) |
 
@@ -17,7 +17,15 @@ Welcome to the central documentation index for the Smart Attendance System. This
 
 ## 📚 Documentation Catalog
 
-### 1. [System Capabilities](system_capabilities.md)
+### 1. [Mobile App Build Guide](mobile_build_guide.md) & [Mobile API Guide](mobile_api_guide.md)
+> **Summary:** Step-by-step Flutter build setup, camera/hardware permissions, Android/iOS configuration, Dio token interceptors, and end-to-end mobile workflows.
+- Flutter dependencies (`mobile_scanner`, `dio`, `camera`, `flutter_secure_storage`).
+- Android `AndroidManifest.xml` & iOS `Info.plist` camera permission setup.
+- Emulator vs Simulator vs Physical device LAN Base URL resolution.
+- Ready-to-use Flutter code templates for QR scanning and Teacher live polling tickers.
+- APK and iOS IPA build and distribution commands.
+
+### 2. [System Capabilities](system_capabilities.md)
 > **Summary:** The feature index of what the platform can currently do.
 - Supported attendance check-in methods (QR code, Face matching, manual override).
 - Automated Telegram & Email absence notification flows.

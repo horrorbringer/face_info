@@ -1,8 +1,11 @@
+import datetime
 import logging
+import secrets
 import requests
 from celery import shared_task
 from django.conf import settings
 from django.core.mail import send_mail
+from django.db.models import Q
 from django.utils import timezone
 from .models import AlertLog, AttendanceRecord, Session
 
@@ -45,6 +48,10 @@ def send_absence_alerts_for_session(self, session_id):
         logger.error(f"Session with id {session_id} not found.")
         return {"error": "Session not found"}
 
+    if session.qr_token == "CANCELLED":
+        logger.info(f"Skipping absence alerts for cancelled session {session_id}.")
+        return {"cancelled": True, "message": "Session was cancelled"}
+
     # Get all active students enrolled in this session's class
     students = session.class_room.students.filter(is_active=True)
     bot_token = getattr(settings, "TELEGRAM_BOT_TOKEN", "")
@@ -83,8 +90,8 @@ def send_absence_alerts_for_session(self, session_id):
 
         # Determine notification channel: Telegram chat_id or Email
         if contact:
-            if contact.startswith("@") or contact.lstrip("-").isdigit():
-                # Telegram handle or numerical chat_id
+            if contact.lstrip("-").isdigit():
+                # Valid numerical chat_id (e.g. 584930192 or -100123456789)
                 channel = "telegram"
                 if not bot_token:
                     error_msg = "TELEGRAM_BOT_TOKEN is not configured in settings."
@@ -95,6 +102,14 @@ def send_absence_alerts_for_session(self, session_id):
                     except Exception as exc:
                         error_msg = str(exc)
                         logger.warning(f"Telegram send failed for {student.student_id}: {exc}")
+            elif contact.startswith("@"):
+                # Warning: Telegram Bot API cannot initiate chats with @usernames directly
+                channel = "telegram"
+                error_msg = (
+                    f"Telegram requires a numeric chat_id. Cannot send to username '{contact}'. "
+                    f"Parent must link account via Telegram bot first."
+                )
+                logger.warning(f"Telegram skipped for {student.student_id}: {error_msg}")
             elif "@" in contact:
                 # Email format
                 channel = "email"
@@ -130,3 +145,80 @@ def send_absence_alerts_for_session(self, session_id):
         "sent_count": sent_count,
         "failed_count": failed_count,
     }
+
+
+def sync_sessions_lifecycle(session_qs=None):
+    """
+    Synchronizes session schedule states with current clock time:
+    1. Auto-Start:
+       - If session.date == today and start_time <= now < end_time and ended_at is None:
+         - Ensures qr_token exists and qr_token_expires_at covers through end_time.
+    2. Auto-End:
+       - If session.ended_at is None AND (session.date < today OR (session.date == today and now >= end_time)):
+         - Sets ended_at = now
+         - Triggers send_absence_alerts_for_session for unrecorded students.
+    """
+    now = timezone.now()
+    today = timezone.localdate()
+
+    if session_qs is None:
+        session_qs = Session.objects.filter(
+            Q(date=today) | Q(date__lt=today, ended_at__isnull=True)
+        ).select_related("class_room")
+
+    started_count = 0
+    ended_count = 0
+
+    for s in session_qs:
+        # Skip cancelled sessions
+        if s.qr_token == "CANCELLED":
+            continue
+
+        s_end_dt = timezone.make_aware(
+            datetime.datetime.combine(s.date, s.end_time),
+            timezone.get_current_timezone()
+        )
+        s_start_dt = timezone.make_aware(
+            datetime.datetime.combine(s.date, s.start_time),
+            timezone.get_current_timezone()
+        )
+
+        # 1. Auto-End check
+        if s.ended_at is None:
+            if s.date < today or now >= s_end_dt:
+                s.ended_at = now
+                s.save(update_fields=["ended_at"])
+                ended_count += 1
+                logger.info(f"Auto-ended session {s.id} ({s.class_room.name}) at scheduled end time {s.end_time}.")
+                try:
+                    send_absence_alerts_for_session.delay(s.id)
+                except Exception as exc:
+                    logger.warning(f"Could not queue async alert for session {s.id}, invoking synchronously: {exc}")
+                    try:
+                        send_absence_alerts_for_session(s.id)
+                    except Exception as inner_exc:
+                        logger.error(f"Failed to send alerts for session {s.id}: {inner_exc}")
+                continue
+
+        # 2. Auto-Start check
+        if s.ended_at is None and s.date == today:
+            if s_start_dt <= now < s_end_dt:
+                if not s.qr_token or not s.qr_token_expires_at or s.qr_token_expires_at < now:
+                    s.qr_token = secrets.token_urlsafe(32)
+                    s.qr_token_expires_at = s_end_dt
+                    s.save(update_fields=["qr_token", "qr_token_expires_at"])
+                    started_count += 1
+                    logger.info(f"Auto-started session {s.id} ({s.class_room.name}) with QR validity until {s.end_time}.")
+
+    return {
+        "auto_started": started_count,
+        "auto_ended": ended_count,
+    }
+
+
+@shared_task
+def auto_manage_session_lifecycle():
+    """
+    Celery periodic task to automatically start scheduled sessions and end completed sessions.
+    """
+    return sync_sessions_lifecycle()

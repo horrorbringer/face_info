@@ -3,16 +3,89 @@
 **Target Audience:** Mobile Developers (Nov Thearith), QA Testing (Sem Sreyneat)  
 **Target Platform:** Flutter (Android & iOS)  
 **API Version:** `v1`  
-**Base URL:**
-- Local Android Emulator: `http://10.0.2.2:8000/api`
-- Local iOS Simulator: `http://127.0.0.1:8000/api`
-- Local Physical Device (LAN): `http://<YOUR_LOCAL_IP>:8000/api`
-- Interactive Swagger Console: `http://<SERVER_HOST>:8000/api/docs/`
-- OpenAPI JSON Schema: `http://<SERVER_HOST>:8000/api/schema/`
+**Interactive API Docs (Swagger):** `/api/docs/`  
+**OpenAPI 3.0 Schema:** `/api/schema/`  
 
 ---
 
-## 1. Authentication Architecture & Token Lifecycle
+## 1. Network Architecture, Base URLs & Health Check
+
+### A. Environment-Based Base URL (`--dart-define`)
+Avoid hardcoding IP addresses in Flutter code. Configure dynamic resolution with compile-time fallbacks:
+
+```dart
+class ApiConstants {
+  static const String baseUrl = String.fromEnvironment(
+    'API_URL',
+    defaultValue: _defaultLocalUrl,
+  );
+
+  static String get _defaultLocalUrl {
+    // 1. Android Emulator loopback
+    if (Platform.isAndroid) return 'http://10.0.2.2:8000/api';
+    // 2. iOS Simulator loopback
+    if (Platform.isIOS) return 'http://127.0.0.1:8000/api';
+    // 3. Fallback LAN / Staging
+    return 'https://student-attendance.vanny.monster/api';
+  }
+
+  // Health
+  static const String health = '/health/';
+
+  // Auth & Student Profile
+  static const String login = '/auth/login/';
+  static const String logout = '/auth/logout/';
+  static const String changePassword = '/auth/change-password/';
+  static const String studentProfile = '/students/me/';
+  static const String scheduleToday = '/students/schedule/today/';
+  static const String studentAlerts = '/alerts/mine/';
+  static String studentReport(int id) => '/reports/student/$id/';
+
+  // Attendance & Face
+  static const String checkinQr = '/attendance/checkin/qr/';
+  static const String checkinFace = '/attendance/checkin/face/';
+  static const String attendanceHistory = '/attendance/history/';
+  static const String faceEnroll = '/face/enroll/';
+
+  // Teacher Endpoints
+  static const String teacherClasses = '/teacher/classes/today/';
+  static const String teacherSessions = '/teacher/sessions/';
+  static String teacherRoster(int sessionId) => '/teacher/sessions/$sessionId/roster/';
+  static String teacherLiveFeed(int sessionId) => '/teacher/sessions/$sessionId/live-feed/';
+  static String teacherBulkAttendance(int sessionId) => '/teacher/sessions/$sessionId/attendance/bulk/';
+  static String teacherDynamicQr(int sessionId) => '/teacher/sessions/$sessionId/qr/dynamic/';
+  static String teacherEndSession(int sessionId) => '/teacher/sessions/$sessionId/end/';
+  static String teacherOverride(int recordId) => '/teacher/attendance/$recordId/';
+  static String exportCsv(int classId) => '/reports/class/$classId/export-csv/';
+}
+```
+
+Run Flutter apps with your target backend:
+```bash
+# Point directly to remote staging/production backend:
+flutter run --dart-define=API_URL=https://student-attendance.vanny.monster/api
+
+# Or target local developer machine across Wi-Fi:
+flutter run --dart-define=API_URL=http://192.168.1.100:8000/api
+```
+
+### B. Connectivity Ping (`GET /api/health/`)
+* **Endpoint:** `GET /api/health/` (Public, no auth required)
+* **Response (200 OK):**
+```json
+{
+  "status": "healthy",
+  "database": "connected",
+  "face_engine": "available",
+  "active_sessions": 2,
+  "timestamp": "2026-09-23T14:10:00.000Z"
+}
+```
+* **Mobile Usage:** Ping during splash screen or when recovering from airplane mode to verify backend connectivity before requesting user login.
+
+---
+
+## 2. Authentication Architecture & Token Lifecycle
 
 ### A. Token Management
 Every authenticated request requires the HTTP header:
@@ -20,19 +93,47 @@ Every authenticated request requires the HTTP header:
 Authorization: Token <user_token>
 Content-Type: application/json
 ```
+*(Backend also flexibly accepts `Bearer <token>` or plain `<token>`)*.
 
-- Store the token securely using `flutter_secure_storage` or EncryptedSharedPreferences / Keychain.
-- **Login:** Send `POST /api/auth/login/` with `username` and `password`. The response provides:
-  - `token`: Unique DRF token key.
-  - `role`: `"student"` or `"teacher"`.
-  - `student` / `teacher`: Associated profile details.
-- **Role-Based Navigation:**
-  - If `role == "student"` -> Navigate to **Student Dashboard** (`/student/home`).
-  - If `role == "teacher"` -> Navigate to **Teacher Dashboard** (`/teacher/classes`).
-- **Logout:** Call `POST /api/auth/logout/` before clearing local storage. This revokes the token on the server so discarded tokens cannot be replayed.
-- **Password Change:** Call `POST /api/auth/change-password/` with `old_password`, `new_password`, and `confirm_password`.
+### B. Login (`POST /api/auth/login/`)
+* **Endpoint:** `POST /api/auth/login/`
+* **Request Body:**
+```json
+{
+  "username": "student_dara",
+  "password": "StudentPassword123!"
+}
+```
+* **Success Response (200 OK):**
+```json
+{
+  "token": "504a0d28f24a975e7717a18bbf1c8010527c4877",
+  "user_id": 14,
+  "username": "student_dara",
+  "role": "student",
+  "student": {
+    "id": 2,
+    "student_id": "STU001",
+    "name": "Dara Pich"
+  },
+  "teacher": null
+}
+```
+* **Role-Based Navigation:**
+  - `role == "student"` $\rightarrow$ Store token, route to **Student Shell Scaffold** (`/student/home`).
+  - `role == "teacher"` $\rightarrow$ Store token, route to **Teacher Shell Scaffold** (`/teacher/classes`).
 
-### B. Pre-Seeded Test Accounts for Mobile Testing
+### C. Logout & Revocation (`POST /api/auth/logout/`)
+* **Endpoint:** `POST /api/auth/logout/`
+* **Response (200 OK):** `{"message": "Successfully logged out. Token revoked."}`
+* Call this before clearing `FlutterSecureStorage` so discarded tokens cannot be replayed.
+
+### D. Change Password (`POST /api/auth/change-password/`)
+* **Endpoint:** `POST /api/auth/change-password/`
+* **Payload:** `{"old_password": "...", "new_password": "...", "confirm_password": "..."}`
+* **Response (200 OK):** `{"message": "Password changed successfully.", "token": "<new_token>"}`
+
+### E. Pre-Seeded Test Accounts
 | Role | Username | Password | Auth Token |
 | :--- | :--- | :--- | :--- |
 | **Teacher (CS-101)** | `teacher_sokha` | `TeacherPassword123!` | `d46d3ee89cbfb6c5e7f63a9d9351bfdbd6042f66` |
@@ -43,263 +144,367 @@ Content-Type: application/json
 
 ---
 
-## 2. Student Mobile App Workflows
+## 3. Student Mobile App Workflows
 
-### Flow 0: First-Time Login & Face Enrollment Onboarding (UX Architecture & Policy)
+### Flow 0: First-Time Login & Face Enrollment Onboarding
+Upon student login, fetch their profile: `GET /api/students/me/`.
 
-When a student logs into the mobile app for the first time, check their profile via `GET /api/students/me/` to inspect `face_embeddings_count`:
-
-```dart
-// Recommended Mobile App Onboarding Router
-final profile = await api.getStudentProfile();
-if (profile.faceEmbeddingsCount == 0 && !hasSeenEnrollmentPrompt) {
-  showEnrollmentPromptBottomSheet();
-} else {
-  navigateToHomeDashboard();
+```json
+{
+  "id": 2,
+  "student_id": "STU001",
+  "full_name": "Dara Pich",
+  "class_room": { "id": 1, "name": "CS-101" },
+  "face_embeddings_count": 0,
+  "consent_given_at": null
 }
 ```
 
-#### A. The Recommended "Soft-Prompt" Bottom Sheet
-**Never hard-block a student from entering the app or checking into class.** If a student is running late on day one, a mandatory photo enrollment will cause them to miss attendance. Instead, show a friendly non-blocking sheet:
+* If `face_embeddings_count == 0` $\rightarrow$ Present **Soft-Prompt Bottom Sheet** (non-blocking).
+* If user chooses *"Enroll My Face Now"*, launch camera to capture 1 to 3 angles (Front, Slight Left, Slight Right).
 
+#### Multi-Angle Face Upload (`POST /api/face/enroll/`)
+* **Content-Type:** `multipart/form-data`
+* **Form Field:** `images` (List of binary JPEG/PNG files) or `image` (single file).
+* **Dio Implementation Snippet:**
+```dart
+Future<bool> enrollFaceAngles(List<String> imagePaths) async {
+  final formData = FormData();
+
+  for (final path in imagePaths) {
+    formData.files.add(MapEntry(
+      'images',
+      await MultipartFile.fromFile(path, filename: 'angle_${DateTime.now().millisecondsSinceEpoch}.jpg'),
+    ));
+  }
+
+  try {
+    final response = await dio.post('/face/enroll/', data: formData);
+    // Success: 201 Created
+    // {
+    //   "message": "Successfully enrolled 3 face template(s).",
+    //   "enrolled_count": 3,
+    //   "total_templates": 3,
+    //   "errors": null
+    // }
+    return response.statusCode == 201;
+  } on DioException catch (e) {
+    // 400 Bad Request with partial errors
+    final errors = e.response?.data['errors'];
+    print('Enrollment error: $errors');
+    return false;
+  }
+}
 ```
-+-------------------------------------------------------------+
-|  📸 Enable Hands-Free Face Check-In                        |
-|                                                             |
-|  Walk past campus entrance kiosks without taking out your   |
-|  phone. It only takes 30 seconds to set up.                 |
-|                                                             |
-|  [  Enroll My Face Now (Camera)  ]  --> Primary Action      |
-|  [  Remind Me Later              ]  --> Neutral Dismiss     |
-|  [  I prefer to use QR Code only ]  --> Privacy Opt-Out     |
-+-------------------------------------------------------------+
-```
-
-1. **"Enroll My Face Now"**:
-   - Opens in-app live selfie camera viewfinder.
-   - Captures 1 to 3 quick angles (Front, Slight Left, Slight Right).
-   - Sends multipart request to `POST /api/face/enroll/` with images.
-   - Automatically stamps `consent_given_at` and unlocks entrance kiosk matching.
-2. **"Remind Me Later"**:
-   - Takes them straight to the Home Dashboard so they can attend class.
-   - Shows a subtle dashboard reminder banner: *"Face check-in not set up (Tap to complete)"*.
-3. **"I prefer to use QR Code only" (Privacy Opt-Out)**:
-   - Sets a local flag so they are never prompted again.
-   - Complies with student privacy regulations (GDPR/FERPA). Unenrolled students check in 100% via QR code.
-
----
-
-#### B. First-Time Mobile Edge Cases & Handling Scenarios
-
-| Scenario | Risk / Problem | Recommended Mobile App Behavior |
-| :--- | :--- | :--- |
-| **1. Friend Fraud (Spoofing)** | Student tries to upload a friend's photo so the friend can fake attendance. | **Disable camera gallery upload** on mobile enrollment. Force live front camera capture with active blink or head turn verification. *(Or require in-person staff enrollment at `/students/<id>/enroll/`)*. |
-| **2. Unenrolled at Kiosk** | Student walks up to the campus entrance kiosk before enrolling. | Kiosk displays: `⚠️ No Match Found`. Subtitle instructs: *"Not enrolled yet? Scan QR in your mobile app or see your teacher."* Automatically resets in 2s. |
-| **3. Poor Lighting / Blur** | Student takes photo in a dark room or with glasses glare. | Backend (`POST /api/face/enroll/`) validates face clarity. If invalid, returns `400 Bad Request` (`"No clear face detected in photo 2. Please move to a brighter area."`). Mobile highlights the failed angle for quick retry. |
-| **4. Appearance Change** | Student changes hairstyle, grows a beard, or gets new glasses. | In **Profile > Face Biometrics**, provide **"Add Extra Angle"** (appends a new vector to `StudentFace` to improve accuracy) and **"Delete & Re-enroll"**. |
-| **5. Minor Consent (< 18)** | Biometric regulations requiring parental/guardian consent. | Include a mandatory consent checkbox on the selfie screen: `[x] I (or my guardian) consent to the storage of mathematical face templates for school attendance.` |
 
 ---
 
 ### Flow 1: QR Code Attendance Check-In
-Using Flutter package: `mobile_scanner` or `qr_code_scanner`.
+* **Endpoint:** `POST /api/attendance/checkin/qr/`
+* **Payload:** `{ "qr_token": "<scanned_token>" }`
+* Supports both static session tokens and dynamic rotating tokens (prefixed `dyn_`).
 
 ```
-[Mobile Camera] -> Scans QR -> Obtains `qr_token` String
+[Mobile Camera] -> Scans QR -> Obtains `qr_token`
        |
        v
-POST /api/attendance/checkin/qr/  { "qr_token": "<scanned_token>" }
+POST /api/attendance/checkin/qr/
        |
-       +---> 201 Created: { "message": "Successfully checked in (present)." }
-       +---> 200 OK:      { "message": "Already checked in for this session." }
-       +---> 400 Bad Req: { "error": "QR code has expired..." }
-       +---> 403 Forbidden: Campus subnet or classroom enrollment restriction
+       +---> 201 Created:    { "message": "Successfully checked in (present)." }
+       +---> 200 OK:         { "message": "Already checked in for this session." }
+       +---> 400 Bad Req:    { "error": "QR code has expired..." }
+       +---> 403 Forbidden:  { "error": "Attendance check-in is restricted to the authorized campus network." }
+       +---> 429 Throttle:   { "detail": "Request was throttled. Expected available in 10 seconds." }
 ```
 
-**Flutter Implementation Note:**
-- If user scans within 15 minutes of session start: recorded as `Present`.
-- If user scans after cutoff: automatically marked as `Late`.
-- QR tokens can be either static tokens or rotating tokens (prefixed with `dyn_`). The backend transparently validates both.
+#### Special Status Handling:
+1. **Campus Wi-Fi Subnet Restriction (403):**  
+   If the student scans using cellular data outside school, show a popup:  
+   👉 *"Please connect to the School Campus Wi-Fi to verify attendance."*
+2. **Rate-Limiting (429):**  
+   Check-in endpoints have `throttle_scope = "attendance_checkin"`. Prevent rapid double-tapping by disabling the scan trigger with a boolean flag (`_isProcessing = true`).
 
 ---
 
 ### Flow 2: Live Biometric Face Check-In
-Using Flutter package: `camera`.
-
-```
-[Camera Controller] -> Capture high-res frame -> `XFile`
-       |
-       v
-POST /api/attendance/checkin/face/
-Body: MultipartRequest
-  - field: "session_id" (optional int)
-  - file:  "image" (JPEG/PNG bytes)
-       |
-       +---> 200 OK:
-             {
-               "matched": true,
-               "student_name": "Dara Pich",
-               "confidence_score": 0.892,
-               "liveness": { "status": "verified" }
-             }
-       +---> 400 Bad Request:
-             { "error": "No confident match. Please use manual lookup..." }
-       +---> 403 Forbidden:
-             { "error": "Anti-spoofing alert: Screen or paper replay detected." }
+* **Endpoint:** `POST /api/attendance/checkin/face/`
+* **Content-Type:** `multipart/form-data`
+* **Form Fields:** `image` (binary file) and optional `session_id` (integer).
+* **Response (200 OK):**
+```json
+{
+  "matched": true,
+  "student_name": "Dara Pich",
+  "confidence_score": 0.892,
+  "liveness": { "status": "verified" }
+}
 ```
 
 ---
 
 ### Flow 3: Student Attendance History & Filtered Pagination
-- **Endpoint:** `GET /api/attendance/history/`
-- **Supported Query Parameters:**
+* **Endpoint:** `GET /api/attendance/history/`
+* **Query Parameters:**
   - `?status=present` / `?status=late` / `?status=absent`
-  - `?date_from=2026-09-01`
-  - `?date_to=2026-09-30`
+  - `?date_from=2026-09-01&date_to=2026-09-30`
   - `?limit=20&offset=0`
-- **Flutter UI Recommendation:** Use a `TabBar` (`All`, `Present`, `Late`, `Absent`) and pass `?status=` when toggling tabs.
+* **Response (200 OK):**
+```json
+{
+  "count": 45,
+  "next": ".../api/attendance/history/?limit=20&offset=20",
+  "previous": null,
+  "results": [
+    {
+      "id": 101,
+      "student": 2,
+      "student_id": "STU001",
+      "student_name": "Dara Pich",
+      "session": 15,
+      "class_room_name": "Computer Science 101",
+      "status": "present",
+      "method": "qr",
+      "checked_in_at": "2026-09-22T08:05:10Z",
+      "confidence_score": null,
+      "is_deleted": false
+    }
+  ]
+}
+```
 
 ---
 
-## 3. Teacher Mobile App Workflows
+### Flow 4: Student In-App Alerts & Notification Badge
+* **Endpoint:** `GET /api/alerts/mine/`
+* **Usage:** Powers the notification bell icon on the Student Dashboard.
+* **Response (200 OK):**
+```json
+[
+  {
+    "id": 4,
+    "session": 12,
+    "session_name": "Computer Science 101",
+    "session_date": "2026-09-21",
+    "channel": "telegram",
+    "status": "sent",
+    "sent_at": "2026-09-21T10:05:00Z",
+    "error_message": ""
+  }
+]
+```
+
+---
+
+### Flow 5: Student Attendance Analytics & Dashboard Summary
+* **Endpoint:** `GET /api/reports/student/<student_id>/`
+* **Usage:** Populates circular progress indicators, attendance rate percentage, and breakdown cards on the Home Dashboard.
+* **Response (200 OK):**
+```json
+{
+  "student_id": "STU001",
+  "student_name": "Dara Pich",
+  "class_room": "Computer Science 101",
+  "total_recorded_sessions": 24,
+  "present_count": 21,
+  "late_count": 2,
+  "absent_count": 1,
+  "attendance_rate": 87.5
+}
+```
+
+---
+
+## 4. Teacher Mobile App Workflows
 
 ### Flow 1: Today's Scheduled Classes
-- **Endpoint:** `GET /api/teacher/classes/today/`
-- Returns an array of scheduled sessions for the teacher's classrooms.
-- Displays class name, start/end time, `is_ended` status, and current QR code validity.
+* **Endpoint:** `GET /api/teacher/classes/today/`
+* **Response (200 OK):**
+```json
+[
+  {
+    "id": 1,
+    "class_room": { "id": 1, "name": "Computer Science 101" },
+    "date": "2026-09-23",
+    "start_time": "08:00:00",
+    "end_time": "10:00:00",
+    "qr_token": "dyn_1_abc123",
+    "is_ended": false,
+    "is_qr_valid": true
+  }
+]
+```
+
+---
 
 ### Flow 2: Create Session On-Demand
-- **Endpoint:** `POST /api/teacher/sessions/`
-- **Payload:**
+* **Endpoint:** `POST /api/teacher/sessions/`
+* **Payload:**
 ```json
 {
   "class_room": 1,
-  "date": "2026-09-22",
+  "date": "2026-09-23",
   "start_time": "08:00:00",
   "end_time": "10:00:00",
   "auto_generate_qr": true,
   "qr_expiry_minutes": 120
 }
 ```
-- Instantly creates session and returns a fresh QR code token.
+
+---
 
 ### Flow 3: Live Class Roster & Roll Call
-- **Endpoint:** `GET /api/teacher/sessions/<session_id>/roster/`
-- **Sample Response:**
+* **Endpoint:** `GET /api/teacher/sessions/<session_id>/roster/`
+* Returns enrolled roster, attendance status, and check-in method (`qr`, `face`, or `manual`).
+
+---
+
+### Flow 4: Teacher 1-Click Manual Override
+* **Endpoint:** `PATCH /api/teacher/attendance/<record_id>/`
+* **Payload:** `{ "status": "present" }` / `{ "status": "late" }` / `{ "status": "absent" }`
+
+---
+
+### Flow 5: Teacher Bulk Attendance Override
+* **Endpoint:** `POST /api/teacher/sessions/<session_id>/attendance/bulk/`
+* **Usage:** Allows the teacher to mark all remaining unmarked students as absent with a single tap, or perform batch attendance updates.
+* **Payload:**
+```json
+{
+  "records": [
+    { "student_id": "STU001", "status": "present" },
+    { "student_id": "STU002", "status": "absent" },
+    { "student_id": "STU003", "status": "late" }
+  ]
+}
+```
+* **Response (200 OK):**
+```json
+{
+  "message": "Bulk attendance updated.",
+  "updated_count": 3,
+  "errors": []
+}
+```
+
+---
+
+### Flow 6: Live Attendance Polling Ticker & Lifecycle Management
+* **Endpoint:** `GET /api/teacher/sessions/<session_id>/live-feed/?since=<server_time>`
+* **Response (200 OK):**
 ```json
 {
   "session_id": 1,
   "class_room": "Computer Science 101",
-  "date": "2026-09-22",
-  "is_ended": false,
-  "summary": {
-    "present": 18,
-    "late": 2,
-    "absent": 0,
-    "unmarked": 5,
-    "total": 25
-  },
-  "roster": [
+  "total_enrolled": 30,
+  "checked_in_count": 22,
+  "present_count": 20,
+  "late_count": 2,
+  "absent_count": 0,
+  "unmarked_count": 8,
+  "server_time": "2026-09-23T08:15:30.123456Z",
+  "recent_checkins": [
     {
-      "student_pk": 2,
+      "record_id": 45,
       "student_id": "STU001",
       "student_name": "Dara Pich",
-      "attendance_status": "present",
-      "method": "qr",
-      "checked_in_at": "2026-09-22T08:05:10Z",
-      "record_id": 42
-    },
-    {
-      "student_pk": 3,
-      "student_id": "STU002",
-      "student_name": "Bopha Keo",
-      "attendance_status": "unmarked",
-      "method": null,
-      "record_id": null
+      "status": "present",
+      "method": "face",
+      "confidence_score": 0.9412,
+      "checked_in_at": "2026-09-23T08:14:55Z"
     }
   ]
 }
 ```
 
-### Flow 4: Teacher Manual Override (1-Click Fix)
-- **Endpoint:** `PATCH /api/teacher/attendance/<record_id>/`
-- **Payload:** `{ "status": "present" }` or `{ "status": "late" }` or `{ "status": "absent" }`
-- Used when a student forgot their phone or teacher grants manual attendance.
+#### Flutter App Lifecycle Management (Preventing Battery Drain):
+Always pause the 3-second polling timer when the screen is navigated away or the application is sent to the background:
 
-### Flow 5: Finalize Session & Trigger Absence Alerts
-- **Endpoint:** `POST /api/teacher/sessions/<session_id>/end/`
-- **Payload:** `{}`
-- Stamps `ended_at = now()` and automatically dispatches async Celery background tasks to notify parents/guardians via Telegram or Email for all students with no attendance record.
+```dart
+class _TeacherLiveFeedScreenState extends State<TeacherLiveFeedScreen> with WidgetsBindingObserver {
+  Timer? _timer;
 
-### Flow 6: Export Classroom Attendance CSV
-- **Endpoint:** `GET /api/reports/class/<class_id>/export-csv/`
-- **Query Params (Optional):** `?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD`
-- **Response:** `text/csv` stream with header `Content-Disposition: attachment; filename="attendance_report_<class>_<date>.csv"`.
-- **Columns:** `Session Date, Classroom, Session Time, Student ID, Full Name, Status, Check-In Method, Checked In At, Confidence Score, Edited By`.
-
-### Flow 7: Live Attendance Polling Feed (Real-Time Counter)
-- **Endpoint:** `GET /api/teacher/sessions/<session_id>/live-feed/`
-- **Query Params (Optional):** `?since=2026-09-23T08:00:00Z`
-- **Response:**
-  ```json
-  {
-    "session_id": 1,
-    "class_room": "Computer Science 101",
-    "date": "2026-09-23",
-    "is_ended": false,
-    "total_enrolled": 30,
-    "checked_in_count": 22,
-    "present_count": 20,
-    "late_count": 2,
-    "absent_count": 0,
-    "unmarked_count": 8,
-    "server_time": "2026-09-23T08:15:30.123456Z",
-    "recent_checkins": [
-      {
-        "record_id": 45,
-        "student_id": "STU001",
-        "student_name": "Dara Pich",
-        "status": "present",
-        "method": "face",
-        "confidence_score": 0.9412,
-        "checked_in_at": "2026-09-23T08:14:55Z"
-      }
-    ]
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _startPolling();
   }
-  ```
-- **Mobile Integration:** Poll every 3–5 seconds while the teacher's active session screen is open to animate new check-ins and live counters.
 
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _stopPolling();
+    super.dispose();
+  }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      _stopPolling(); // Stop polling when app in background
+    } else if (state == AppLifecycleState.resumed) {
+      _startPolling(); // Resume when teacher returns
+    }
+  }
+
+  void _startPolling() {
+    _timer?.cancel();
+    _fetchLiveFeed();
+    _timer = Timer.periodic(const Duration(seconds: 3), (_) => _fetchLiveFeed());
+  }
+
+  void _stopPolling() {
+    _timer?.cancel();
+    _timer = null;
+  }
+}
+```
 
 ---
 
-## 4. HTTP Status Code & Error Handling Matrix
+### Flow 7: Finalize Session & Trigger Absence Alerts
+* **Endpoint:** `POST /api/teacher/sessions/<session_id>/end/`
+* **Payload:** `{}`
+* Marks all remaining unmarked students as absent and triggers asynchronous Celery tasks to send automated Telegram/Email notices to parents.
 
-| HTTP Code | Scenario | Recommended Mobile App Behavior |
+---
+
+### Flow 8: Export Classroom Attendance CSV
+* **Endpoint:** `GET /api/reports/class/<class_id>/export-csv/`
+* **Query Params (Optional):** `?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD`
+* Returns raw `text/csv` stream for direct saving or sharing via device share sheet.
+
+---
+
+## 5. HTTP Status Code & Error Handling Matrix
+
+| HTTP Code | Scenario | Recommended Mobile App Behavior & UX Message |
 | :---: | :--- | :--- |
-| **`200 OK`** | Successful query or idempotent check-in | Render data or display existing check-in badge |
-| **`201 Created`** | Successful check-in / session creation | Show success animation / haptic feedback |
-| **`400 Bad Request`** | Expired QR token, invalid credentials, or low confidence match | Show friendly banner with teacher fallback option |
-| **`401 Unauthorized`** | Token missing, invalid, or revoked | Redirect immediately to `LoginScreen` and clear secure storage |
-| **`403 Forbidden`** | Campus IP subnet restriction, student not enrolled in class, or spoof alert | Show clear explanatory alert dialog |
-| **`404 Not Found`** | Profile or session does not exist | Show empty state |
-| **`503 Unavailable`** | Backend service or database degraded | Show "Server maintenance" retry screen |
+| **`200 OK`** | Successful query or duplicate check-in | Render data or display *"Already checked in"* badge. |
+| **`201 Created`** | Successful check-in / session creation | Trigger light haptic buzz & show green checkmark dialog. |
+| **`400 Bad Request`** | Expired QR token, invalid format, or blurry selfie | Show friendly banner highlighting the issue (e.g., *"Photo 2 is too dark. Please retry."*). |
+| **`401 Unauthorized`** | Token expired or user signed in elsewhere | Clear `FlutterSecureStorage` and redirect immediately to `LoginScreen`. |
+| **`403 Forbidden`** | Campus Wi-Fi restriction or spoofing detected | Alert: *"Check-in is restricted to the authorized campus Wi-Fi network."* |
+| **`404 Not Found`** | Profile or session not found | Render clean empty state illustration with retry button. |
+| **`429 Too Many Requests`** | Check-in throttle exceeded (rapid scanning) | Show *"Please wait a few seconds before trying again."* |
+| **`503 Unavailable`** | Server offline or database maintenance | Show *"Server undergoing maintenance"* retry screen. |
 
 ---
 
-## 5. Developer Tools & Code Generation
+## 6. Developer Tools & Code Generation
 
-1. **Interactive Swagger Console:**
-   Open `http://localhost:8000/api/docs/` in any browser to execute live requests and test tokens without writing code.
-2. **Flutter Model & Client Generation:**
-   Generate strongly typed Dart models directly from the OpenAPI 3.0 schema:
-   ```bash
-   # Download the OpenAPI spec
-   curl -o openapi.json http://localhost:8000/api/schema/
+### 1. Interactive Swagger Console
+Open `http://localhost:8000/api/docs/` in any browser to execute live requests and test tokens without writing code.
 
-   # Generate Dart models via openapi-generator
-   npx @openapitools/openapi-generator-cli generate \
-     -i openapi.json \
-     -g dart-dio \
-     -o ./lib/api_client
-   ```
+### 2. Automated Model Generation via OpenAPI
+Generate strongly-typed Dart models and client code directly from the Django backend:
+
+```bash
+# 1. Download OpenAPI specification from live backend
+curl -o openapi.json http://localhost:8000/api/schema/
+
+# 2. Generate Dart Dio API client
+npx @openapitools/openapi-generator-cli generate \
+  -i openapi.json \
+  -g dart-dio \
+  -o ./lib/core/api_client
+```

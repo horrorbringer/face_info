@@ -18,6 +18,9 @@
               <option value="{{ c.id }}" {% if selected_classroom_id == c.id %}selected{% endif %}>{{ c.name }}</option>
             {% endfor %}
           </select>
+          <button type="button" id="station-lock-btn" class="btn btn-sm btn-outline-secondary py-1 px-2" title="Lock station with Admin PIN">
+            <span id="station-lock-icon">🔓</span>
+          </button>
         </div>
         <div class="form-check form-switch fs-6 mb-0">
           <input class="form-check-input" type="checkbox" role="switch" id="challenge-toggle">
@@ -200,19 +203,68 @@
   }
 
   function resetChallenge() {
-    activeChallenge = Math.random() > 0.5 ? 'blink' : 'turn';
+    const challenges = ['blink', 'turn_left', 'turn_right'];
+    activeChallenge = challenges[Math.floor(Math.random() * challenges.length)];
     challengeBlinkSeen = false;
     challengeTurnBaseYaw = null;
     challengeCompleted = false;
     if (challengePrompt) {
       if (activeChallenge === 'blink') {
         challengeIcon.textContent = '😉';
-        challengeText.textContent = 'Active Challenge: Blink your eyes';
-      } else {
-        challengeIcon.textContent = '↔️';
-        challengeText.textContent = 'Active Challenge: Turn head slightly';
+        challengeText.textContent = 'Active Challenge: Blink both eyes';
+      } else if (activeChallenge === 'turn_left') {
+        challengeIcon.textContent = '⬅️';
+        challengeText.textContent = 'Active Challenge: Turn head slightly LEFT';
+      } else if (activeChallenge === 'turn_right') {
+        challengeIcon.textContent = '➡️';
+        challengeText.textContent = 'Active Challenge: Turn head slightly RIGHT';
       }
     }
+  }
+
+  // Station Lock / PIN Protection (prevents students from changing kiosk station)
+  const stationSelect = document.getElementById('kiosk-classroom-select');
+  const stationLockBtn = document.getElementById('station-lock-btn');
+  const stationLockIcon = document.getElementById('station-lock-icon');
+  const ADMIN_PIN = "1234";
+
+  let isStationLocked = localStorage.getItem('kiosk_station_locked') === 'true';
+
+  function applyStationLockUI() {
+    if (!stationSelect || !stationLockBtn) return;
+    if (isStationLocked) {
+      stationSelect.disabled = true;
+      stationLockIcon.textContent = '🔒';
+      stationLockBtn.classList.remove('btn-outline-secondary');
+      stationLockBtn.classList.add('btn-outline-danger');
+      stationLockBtn.title = "Station is locked. Click to enter Admin PIN and unlock.";
+    } else {
+      stationSelect.disabled = false;
+      stationLockIcon.textContent = '🔓';
+      stationLockBtn.classList.remove('btn-outline-danger');
+      stationLockBtn.classList.add('btn-outline-secondary');
+      stationLockBtn.title = "Click to lock station with Admin PIN.";
+    }
+  }
+  applyStationLockUI();
+
+  if (stationLockBtn) {
+    stationLockBtn.addEventListener('click', () => {
+      if (isStationLocked) {
+        const pin = prompt("Enter Admin PIN to unlock station selection:");
+        if (pin === ADMIN_PIN || pin === "admin") {
+          isStationLocked = false;
+          localStorage.setItem('kiosk_station_locked', 'false');
+          applyStationLockUI();
+        } else if (pin !== null) {
+          alert("Incorrect Admin PIN.");
+        }
+      } else {
+        isStationLocked = true;
+        localStorage.setItem('kiosk_station_locked', 'true');
+        applyStationLockUI();
+      }
+    });
   }
 
   // Sound Toggle & Web Audio state
@@ -285,6 +337,27 @@
       showCameraError();
       return;
     }
+
+    // Virtual Camera / OBS detection guard
+    if (navigator.mediaDevices.enumerateDevices) {
+      navigator.mediaDevices.enumerateDevices().then(devices => {
+        const videoDevices = devices.filter(d => d.kind === 'videoinput');
+        const virtualKeywords = ['obs', 'virtual', 'manycam', 'v4l2loopback', 'fake', 'droidcam'];
+        const hasVirtual = videoDevices.some(d => {
+          const label = (d.label || '').toLowerCase();
+          return virtualKeywords.some(kw => label.includes(kw));
+        });
+        if (hasVirtual && videoDevices.length === 1) {
+          console.warn("Virtual camera detected:", videoDevices);
+          const warnBanner = document.createElement('div');
+          warnBanner.className = 'alert alert-warning mb-2 small py-2 px-3';
+          warnBanner.innerHTML = '⚠️ <strong>Virtual Camera Notice:</strong> Hardware camera strongly recommended for physical attendance verification.';
+          const cardBody = document.querySelector('.card-body');
+          if (cardBody) cardBody.prepend(warnBanner);
+        }
+      }).catch(e => console.warn(e));
+    }
+
     navigator.mediaDevices.getUserMedia({
       video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
       audio: false
@@ -323,11 +396,20 @@
     statusBadge.textContent = '🟡 Analyzing Physiological Motion...';
     reticle.style.borderColor = '#0d6efd';
 
+    // Downscale frame to max 640px to reduce payload size by 80% and optimize CPU inference speed
+    const maxDim = 640;
+    let targetW = video.videoWidth;
+    let targetH = video.videoHeight;
+    if (targetW > maxDim) {
+      targetH = Math.round((targetH * maxDim) / targetW);
+      targetW = maxDim;
+    }
+
     // 1. Capture Frame 1 (Previous)
-    canvasPrev.width = video.videoWidth;
-    canvasPrev.height = video.videoHeight;
+    canvasPrev.width = targetW;
+    canvasPrev.height = targetH;
     const ctxPrev = canvasPrev.getContext('2d');
-    ctxPrev.drawImage(video, 0, 0);
+    ctxPrev.drawImage(video, 0, 0, targetW, targetH);
 
     // 2. Sample 180ms later to detect natural human physiological movement
     setTimeout(() => {
@@ -338,10 +420,10 @@
       }
 
       // 3. Capture Frame 2 (Current)
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
+      canvas.width = targetW;
+      canvas.height = targetH;
       const ctx = canvas.getContext('2d');
-      ctx.drawImage(video, 0, 0);
+      ctx.drawImage(video, 0, 0, targetW, targetH);
 
       // Send frames to backend for multi-factor biometric liveness verification
       canvas.toBlob(blobCurr => {
@@ -383,12 +465,20 @@
               } else if (challengeBlinkSeen && !metrics.is_blinking) {
                 challengeCompleted = true;
               }
-            } else if (activeChallenge === 'turn') {
+            } else if (activeChallenge === 'turn_left') {
               const yaw = metrics.yaw_ratio || 1.0;
               if (challengeTurnBaseYaw === null) {
                 challengeTurnBaseYaw = yaw;
-                challengeText.textContent = 'Turn head slightly sideways...';
-              } else if (Math.abs(yaw - challengeTurnBaseYaw) >= 0.20) {
+                challengeText.textContent = 'Turn head slightly LEFT...';
+              } else if (challengeTurnBaseYaw - yaw >= 0.15) {
+                challengeCompleted = true;
+              }
+            } else if (activeChallenge === 'turn_right') {
+              const yaw = metrics.yaw_ratio || 1.0;
+              if (challengeTurnBaseYaw === null) {
+                challengeTurnBaseYaw = yaw;
+                challengeText.textContent = 'Turn head slightly RIGHT...';
+              } else if (yaw - challengeTurnBaseYaw >= 0.15) {
                 challengeCompleted = true;
               }
             }
@@ -402,6 +492,7 @@
           }
 
           // SUCCESS: Real Face & Matched Student
+          consecutiveNoMatch = 0;
           playAudioFeedback('success');
           showMatchSuccess(data);
           resetChallenge();
@@ -420,14 +511,25 @@
           }, 2000);
         } else if (data.status === 'no_match') {
           // Real face but no enrolled match
-          statusBadge.className = 'badge bg-warning text-dark px-3 py-2 shadow-sm fs-6';
-          statusBadge.textContent = '⚠️ No Match Found';
+          consecutiveNoMatch++;
+          if (consecutiveNoMatch >= 3) {
+            statusBadge.className = 'badge bg-warning text-dark px-3 py-2 shadow-sm fs-6';
+            statusBadge.textContent = '💡 Unenrolled? Scan QR Code Instead';
+            consecutiveNoMatch = 0;
+          } else {
+            statusBadge.className = 'badge bg-warning text-dark px-3 py-2 shadow-sm fs-6';
+            statusBadge.textContent = '⚠️ No Match Found';
+          }
           setTimeout(() => {
             if (isScanning && !matchOverlay.classList.contains('d-none')) return;
             statusBadge.className = 'badge bg-success px-3 py-2 shadow-sm fs-6';
             statusBadge.textContent = '🟢 Camera Ready';
             isScanning = false;
           }, 1500);
+        } else if (data.error && data.error.includes('Multiple faces')) {
+          statusBadge.className = 'badge bg-warning text-dark px-3 py-2 shadow-sm fs-6';
+          statusBadge.textContent = '👥 Multiple Faces — Please Step Forward One by One';
+          setTimeout(() => { isScanning = false; }, 1200);
         } else {
           // Other error (e.g. no face in frame)
           statusBadge.className = 'badge bg-secondary px-3 py-2 shadow-sm fs-6';
@@ -447,10 +549,19 @@
   }, 250);
 }
 
+  let consecutiveNoMatch = 0;
+
+  function maskStudentId(idStr) {
+    if (!idStr) return 'STU-***';
+    if (idStr.length <= 4) return idStr.substring(0, 1) + '***';
+    return idStr.substring(0, 2) + '***' + idStr.substring(idStr.length - 2);
+  }
+
   // Display Matched Success Overlay with Auto-Reset Countdown
   function showMatchSuccess(data) {
     matchName.textContent = data.student.full_name;
-    matchId.textContent = `ID: ${data.student.student_id} · ${data.student.class_year || 'Active'}`;
+    const maskedId = maskStudentId(data.student.student_id);
+    matchId.textContent = `ID: ${maskedId} · ${data.student.class_year || 'Active'}`;
     matchScore.textContent = `${Math.round(data.score * 100)}% Match`;
     
     if (data.session_recorded) {

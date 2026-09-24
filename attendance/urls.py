@@ -34,6 +34,8 @@ urlpatterns = [
     path("teacher/sessions/<int:session_id>/qr/dynamic/", views.SessionDynamicQRView.as_view(), name="teacher-session-qr-dynamic"),
     path("teacher/sessions/<int:session_id>/live-qr/", views.session_live_qr, name="teacher-session-live-qr"),
     path("teacher/sessions/<int:session_id>/end/", views.SessionEndView.as_view(), name="teacher-session-end"),
+    path("teacher/sessions/<int:session_id>/reopen/", views.SessionReopenView.as_view(), name="teacher-session-reopen"),
+    path("teacher/sessions/<int:session_id>/cancel/", views.SessionCancelView.as_view(), name="teacher-session-cancel"),
     path("teacher/attendance/<int:record_id>/", views.AttendanceOverrideView.as_view(), name="teacher-attendance-override"),
 
     # Reports

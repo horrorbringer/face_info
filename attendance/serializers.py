@@ -55,19 +55,23 @@ class SessionSerializer(serializers.ModelSerializer):
     class_room = ClassRoomSerializer(read_only=True)
     is_ended = serializers.SerializerMethodField()
     is_qr_valid = serializers.SerializerMethodField()
+    is_cancelled = serializers.SerializerMethodField()
 
     class Meta:
         model = Session
         fields = [
             "id", "class_room", "date", "start_time", "end_time",
-            "qr_token", "qr_token_expires_at", "ended_at", "is_ended", "is_qr_valid"
+            "qr_token", "qr_token_expires_at", "ended_at", "is_ended", "is_qr_valid", "is_cancelled"
         ]
 
     def get_is_ended(self, obj):
         return obj.ended_at is not None
 
+    def get_is_cancelled(self, obj):
+        return obj.qr_token == "CANCELLED"
+
     def get_is_qr_valid(self, obj):
-        if not obj.qr_token or not obj.qr_token_expires_at:
+        if not obj.qr_token or not obj.qr_token_expires_at or obj.qr_token == "CANCELLED":
             return False
         from django.utils import timezone
         return timezone.now() < obj.qr_token_expires_at
@@ -185,6 +189,8 @@ class StudentSessionScheduleSerializer(serializers.Serializer):
     end_time = serializers.TimeField()
     is_qr_active = serializers.BooleanField()
     is_checked_in = serializers.BooleanField()
+    is_cancelled = serializers.BooleanField(default=False)
     my_status = serializers.CharField(allow_null=True)
     my_method = serializers.CharField(allow_null=True)
     checked_in_at = serializers.DateTimeField(allow_null=True)
+
