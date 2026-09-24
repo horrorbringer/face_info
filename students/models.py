@@ -42,6 +42,18 @@ class Student(models.Model):
         return self.classrooms.filter(id=c_id).exists()
 
     @property
+    def guardian_email(self):
+        """Returns valid email address from guardian contact, or None."""
+        c = (self.guardian_contact or "").strip()
+        return c if "@" in c else None
+
+    @property
+    def guardian_telegram_id(self):
+        """Returns numeric Telegram chat_id from guardian contact, or None."""
+        c = (self.guardian_contact or "").strip()
+        return c if c.lstrip("-").isdigit() else None
+
+    @property
     def name(self):
         return self.full_name
 

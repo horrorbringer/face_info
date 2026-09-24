@@ -32,7 +32,7 @@ class ClassRoomSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ClassRoom
-        fields = ["id", "name", "teacher"]
+        fields = ["id", "name", "room", "teacher"]
 
 
 class StudentProfileSerializer(serializers.ModelSerializer):

@@ -794,9 +794,10 @@ class SessionCancelView(APIView):
             return Response({"error": "Not authorized to cancel this session.", "code": "UNAUTHORIZED"}, status=status.HTTP_403_FORBIDDEN)
 
         now = timezone.now()
+        session.is_cancelled = True
         session.qr_token = "CANCELLED"
         session.ended_at = now
-        session.save(update_fields=["qr_token", "ended_at"])
+        session.save(update_fields=["is_cancelled", "qr_token", "ended_at"])
 
         return Response({
             "message": "Session has been cancelled. No absence alerts will be dispatched.",

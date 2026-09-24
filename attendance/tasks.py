@@ -103,39 +103,41 @@ def send_absence_alerts_for_session(self, session_id):
         )
 
         # Determine notification channel: Telegram chat_id or Email
-        if contact:
-            if contact.lstrip("-").isdigit():
-                # Valid numerical chat_id (e.g. 584930192 or -100123456789)
-                channel = "telegram"
-                if not bot_token:
-                    error_msg = "TELEGRAM_BOT_TOKEN is not configured in settings."
-                else:
-                    try:
-                        send_telegram_alert(bot_token, contact, message_text)
-                        success = True
-                    except Exception as exc:
-                        error_msg = str(exc)
-                        logger.warning(f"Telegram send failed for {student.student_id}: {exc}")
-            elif contact.startswith("@"):
-                # Warning: Telegram Bot API cannot initiate chats with @usernames directly
-                channel = "telegram"
-                error_msg = (
-                    f"Telegram requires a numeric chat_id. Cannot send to username '{contact}'. "
-                    f"Parent must link account via Telegram bot first."
-                )
-                logger.warning(f"Telegram skipped for {student.student_id}: {error_msg}")
-            elif "@" in contact:
-                # Email format
-                channel = "email"
+        tg_id = student.guardian_telegram_id
+        email_addr = student.guardian_email
+
+        if tg_id:
+            # Valid numerical chat_id (e.g. 584930192 or -100123456789)
+            channel = "telegram"
+            if not bot_token:
+                error_msg = "TELEGRAM_BOT_TOKEN is not configured in settings."
+            else:
                 try:
-                    send_email_alert(contact, student.full_name, session.class_room.name, str(session.date))
+                    send_telegram_alert(bot_token, tg_id, message_text)
                     success = True
                 except Exception as exc:
                     error_msg = str(exc)
-                    logger.warning(f"Email send failed for {student.student_id}: {exc}")
-            else:
-                channel = "unsupported"
-                error_msg = f"Unknown contact format: '{contact}'"
+                    logger.warning(f"Telegram send failed for {student.student_id}: {exc}")
+        elif email_addr:
+            # Email format
+            channel = "email"
+            try:
+                send_email_alert(email_addr, student.full_name, session.class_room.name, str(session.date))
+                success = True
+            except Exception as exc:
+                error_msg = str(exc)
+                logger.warning(f"Email send failed for {student.student_id}: {exc}")
+        elif contact.startswith("@"):
+            # Telegram Bot API cannot initiate chats with @usernames directly
+            channel = "telegram"
+            error_msg = (
+                f"Telegram requires a numeric chat_id. Cannot send to username '{contact}'. "
+                f"Parent must link account via Telegram bot first."
+            )
+            logger.warning(f"Telegram skipped for {student.student_id}: {error_msg}")
+        elif contact:
+            channel = "unsupported"
+            error_msg = f"Unknown contact format: '{contact}'"
         else:
             channel = "none"
             error_msg = "No guardian contact information on file."

@@ -4,8 +4,16 @@ from django.db import models
 
 class Teacher(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True, related_name="teacher_profile")
-    name = models.CharField(max_length=255)
-    email = models.EmailField()
+    name = models.CharField(max_length=255, blank=True)
+    email = models.EmailField(blank=True)
+
+    def save(self, *args, **kwargs):
+        if self.user:
+            if not self.email and self.user.email:
+                self.email = self.user.email
+            if not self.name:
+                self.name = self.user.get_full_name() or self.user.username
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.name} ({self.email})"
@@ -13,9 +21,12 @@ class Teacher(models.Model):
 
 class ClassRoom(models.Model):
     name = models.CharField(max_length=100)
+    room = models.CharField(max_length=50, blank=True, default="", help_text="Physical room/lab identifier, e.g. Room 204 or Lab B")
     teacher = models.ForeignKey(Teacher, on_delete=models.SET_NULL, null=True, blank=True, related_name="classrooms")
 
     def __str__(self):
+        if self.room:
+            return f"{self.name} ({self.room})"
         return self.name
 
     def get_enrolled_students(self, active_only=True):
@@ -36,12 +47,18 @@ class Session(models.Model):
     qr_token = models.CharField(max_length=128, unique=True, null=True, blank=True)
     qr_token_expires_at = models.DateTimeField(null=True, blank=True)
     ended_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    is_cancelled = models.BooleanField(default=False, db_index=True)
 
     class Meta:
         indexes = [
             models.Index(fields=["class_room", "date"]),
             models.Index(fields=["date", "ended_at"]),
+            models.Index(fields=["is_cancelled", "date"]),
         ]
+
+    @property
+    def is_cancelled_or_inactive(self):
+        return self.is_cancelled or self.qr_token == "CANCELLED"
 
     def __str__(self):
         return f"{self.class_room.name} - {self.date} ({self.start_time} - {self.end_time})"
