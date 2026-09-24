@@ -7,8 +7,12 @@ logger = logging.getLogger(__name__)
 
 def get_client_ip(request) -> str:
     """
-    Extracts the client IP address from the request, respecting proxy headers.
+    Extracts the client IP address from the request, respecting Cloudflare & proxy headers.
     """
+    cf_ip = request.META.get("HTTP_CF_CONNECTING_IP")
+    if cf_ip:
+        return cf_ip.strip()
+
     x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
     if x_forwarded_for:
         # Take the first IP from the comma-separated list of proxies

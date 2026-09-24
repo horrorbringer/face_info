@@ -26,20 +26,24 @@ Welcome to the central documentation index for the Smart Attendance System. This
 - APK and iOS IPA build and distribution commands.
 
 ### 2. [System Capabilities](system_capabilities.md)
-> **Summary:** The feature index of what the platform can currently do.
-- Supported attendance check-in methods (QR code, Face matching, manual override).
-- Automated Telegram & Email absence notification flows.
+> **Summary:** The comprehensive feature index and technical capabilities of the platform.
+- Multi-classroom student enrollment & teacher course management.
+- Multi-teacher authorization (co-teachers / assistant instructors).
+- Supported attendance check-in methods (Rotating Dynamic QR code, Vectorized Face matching, Manual bulk overrides, Gate Kiosk).
+- Anti-cheat mechanisms (Device anti-hopping, impossible travel velocity guards, campus Wi-Fi IP subnet whitelisting).
+- Automated Telegram & Email absence notification flows with non-blocking Celery dispatch.
+- Accurate session lifecycle tracking (`started_at`, `ended_at`, `is_cancelled`) with Celery Beat auto-management.
 - Multi-angle biometric face enrollment (REST API & Staff Web Camera Studio).
-- Teacher scheduling and class analytics.
+- Teacher scheduling with conflict detection, live polling feeds, and CSV reporting.
 
-### 2. [Architecture & Business Logic Guide](architecture_and_business_logic.md)
+### 3. [Architecture & Business Logic Guide](architecture_and_business_logic.md)
 > **Summary:** The technical deep-dive for backend engineers and system maintainers.
 - High-level system architecture diagrams (Django, Celery, Redis, PostgreSQL, InsightFace).
 - Database Entity Relationship Diagram (ERD).
 - Sequence flows for QR check-in, Face matching, and asynchronous alert dispatching.
 - Configuration variables and production deployment tips.
 
-### 3. [API Reference](api_reference.md), [Mobile Integration Guide](mobile_api_guide.md) & [API Status & MVP Scope](api_status_and_mvp.md)
+### 4. [API Reference](api_reference.md), [Mobile Integration Guide](mobile_api_guide.md) & [API Status & MVP Scope](api_status_and_mvp.md)
 > **Summary:** Complete REST API endpoint reference, Flutter integration handbook, and verified MVP feature completion scorecard.
 - Mobile authentication lifecycle, token revocation on logout, and role routing.
 - QR scanner integration, live face check-in, and history pagination.
@@ -48,9 +52,9 @@ Welcome to the central documentation index for the Smart Attendance System. This
 - Interactive Swagger UI (`/api/docs/`) and OpenAPI 3.0 schema (`/api/schema/`).
 - HTTP error handling matrix and Dart code generator setup.
 
-### 4. [Testing & QA Guide](testing_guide.md)
+### 5. [Testing & QA Guide](testing_guide.md)
 > **Summary:** Step-by-step procedures for validating new releases.
-- Running automated test suites (19 test cases).
+- Running automated test suites (46 comprehensive test cases passing).
 - Manual test checklist for QR check-in, dynamic expiry, and biometric enrollment.
 - Testing Celery background tasks and simulated Telegram alerts.
 - Audit trail verification.

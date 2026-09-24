@@ -37,7 +37,7 @@ class ClassRoomSerializer(serializers.ModelSerializer):
 
 
 class StudentProfileSerializer(serializers.ModelSerializer):
-    class_room = ClassRoomSerializer(read_only=True)
+    class_room = serializers.SerializerMethodField()
     classrooms = serializers.SerializerMethodField()
     face_embeddings_count = serializers.SerializerMethodField()
     guardian_email = serializers.CharField(source="effective_guardian_email", read_only=True)
@@ -51,6 +51,10 @@ class StudentProfileSerializer(serializers.ModelSerializer):
             "class_room", "classrooms", "face_embeddings_count",
             "consent_given_at"
         ]
+
+    def get_class_room(self, obj):
+        cr = obj.class_room or obj.get_enrolled_classrooms().first()
+        return ClassRoomSerializer(cr).data if cr else None
 
     def get_classrooms(self, obj):
         classes = obj.get_enrolled_classrooms()
@@ -149,10 +153,14 @@ class SessionCreateSerializer(serializers.ModelSerializer):
 
         auto_qr = validated_data.pop("auto_generate_qr", True)
         expiry_minutes = validated_data.pop("qr_expiry_minutes", 120)
+        target_date = validated_data.get("date", timezone.localdate())
+        now = timezone.now()
 
         if auto_qr:
             validated_data["qr_token"] = secrets.token_urlsafe(32)
-            validated_data["qr_token_expires_at"] = timezone.now() + datetime.timedelta(minutes=expiry_minutes)
+            validated_data["qr_token_expires_at"] = now + datetime.timedelta(minutes=expiry_minutes)
+            if target_date == timezone.localdate():
+                validated_data["started_at"] = now
 
         return super().create(validated_data)
 
@@ -163,6 +171,9 @@ class SessionRosterItemSerializer(serializers.Serializer):
     student_name = serializers.CharField(source="full_name")
     is_active = serializers.BooleanField()
     guardian_contact = serializers.CharField()
+    guardian_email = serializers.CharField(allow_blank=True, required=False)
+    guardian_phone = serializers.CharField(allow_blank=True, required=False)
+    guardian_telegram_id = serializers.CharField(allow_blank=True, required=False)
     attendance_status = serializers.CharField()
     method = serializers.CharField(allow_null=True)
     checked_in_at = serializers.DateTimeField(allow_null=True)

@@ -105,25 +105,37 @@ def kiosk(request):
         # AUTO-CONFIRM: Verified real face & matched enrolled student
         LookupAuditLog.objects.create(staff_user=request.user, student=student, outcome="matched")
 
-        # Optional: if an active class session exists for selected room or student's classroom, mark present
+        # Optional: if an active class session exists for selected room or student's enrolled classrooms, record attendance
         session_recorded = False
         try:
             from attendance.models import AttendanceRecord, Session
+            import datetime
             now = timezone.localtime()
-            effective_room = target_classroom if target_classroom else student.class_room
-            if effective_room:
+            enrolled_rooms = [target_classroom] if target_classroom else list(student.get_enrolled_classrooms())
+            if enrolled_rooms:
                 session = Session.objects.filter(
-                    class_room=effective_room,
+                    class_room__in=enrolled_rooms,
                     date=now.date(),
                     ended_at__isnull=True,
-                ).first()
+                    is_cancelled=False,
+                ).order_by("start_time").first()
                 if session:
+                    late_threshold_mins = getattr(settings, "LATE_THRESHOLD_MINUTES", 15)
+                    session_start_datetime = timezone.make_aware(
+                        datetime.datetime.combine(session.date, session.start_time),
+                        timezone.get_current_timezone()
+                    )
+                    effective_start = session.started_at or session_start_datetime
+                    late_cutoff = effective_start + datetime.timedelta(minutes=late_threshold_mins)
+                    att_status = "late" if now > late_cutoff else "present"
+
                     AttendanceRecord.objects.get_or_create(
                         student=student,
                         session=session,
                         defaults={
-                            "status": "present",
+                            "status": att_status,
                             "method": "face",
+                            "checked_in_at": now,
                             "confidence_score": score,
                             "edited_by": request.user,
                         }

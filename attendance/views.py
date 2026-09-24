@@ -170,6 +170,7 @@ class StudentTodayScheduleView(APIView):
                 and not s.ended_at
                 and not is_cancelled
             )
+            is_checked_in = rec is not None and rec.status in ("present", "late")
             schedule_data.append({
                 "id": s.id,
                 "class_room": s.class_room,
@@ -177,7 +178,7 @@ class StudentTodayScheduleView(APIView):
                 "start_time": s.start_time,
                 "end_time": s.end_time,
                 "is_qr_active": is_qr_active,
-                "is_checked_in": rec is not None,
+                "is_checked_in": is_checked_in,
                 "is_cancelled": is_cancelled,
                 "my_status": rec.status if rec else None,
                 "my_method": rec.method if rec else None,
@@ -305,6 +306,7 @@ class QRCheckInView(APIView):
         fifteen_mins_ago = now - datetime.timedelta(minutes=15)
         conflicting_checkin = AttendanceRecord.objects.filter(
             student=student,
+            status__in=["present", "late"],
             checked_in_at__gte=fifteen_mins_ago,
             is_deleted=False
         ).exclude(session=session).select_related("session__class_room").first()
@@ -647,6 +649,9 @@ class SessionRotateQRView(APIView):
         if not is_authorized_teacher_or_staff(request.user, session.class_room):
             return Response({"error": "Not authorized to manage this session.", "code": "UNAUTHORIZED"}, status=status.HTTP_403_FORBIDDEN)
 
+        if session.is_cancelled_or_inactive:
+            return Response({"error": "Cannot rotate QR on a cancelled session.", "code": "SESSION_CANCELLED"}, status=status.HTTP_400_BAD_REQUEST)
+
         expiry_minutes = int(request.data.get("expiry_minutes", 10))
         now = timezone.now()
         session.qr_token = secrets.token_urlsafe(32)
@@ -678,6 +683,9 @@ class SessionDynamicQRView(APIView):
         session = get_object_or_404(Session.objects.select_related("class_room"), id=session_id)
         if not is_authorized_teacher_or_staff(request.user, session.class_room):
             return Response({"error": "Not authorized to manage this session.", "code": "UNAUTHORIZED"}, status=status.HTTP_403_FORBIDDEN)
+
+        if session.is_cancelled_or_inactive:
+            return Response({"error": "This session has been cancelled.", "code": "SESSION_CANCELLED"}, status=status.HTTP_400_BAD_REQUEST)
 
         if session.ended_at:
             return Response({"error": "This session has already ended.", "code": "SESSION_ENDED"}, status=status.HTTP_400_BAD_REQUEST)
@@ -951,6 +959,9 @@ class TeacherSessionRosterView(APIView):
                 "full_name": st.full_name,
                 "is_active": st.is_active,
                 "guardian_contact": st.guardian_contact,
+                "guardian_email": st.effective_guardian_email or "",
+                "guardian_phone": st.guardian_phone or "",
+                "guardian_telegram_id": st.effective_guardian_telegram_id or "",
                 "attendance_status": att_status,
                 "method": method,
                 "checked_in_at": checked_in_at,
@@ -1079,14 +1090,24 @@ class TeacherSessionBulkAttendanceView(APIView):
 
                 try:
                     if student_id:
-                        student = Student.objects.get(student_id=student_id, class_room=session.class_room)
+                        student = Student.objects.filter(
+                            Q(classrooms=session.class_room) | Q(class_room=session.class_room),
+                            student_id=student_id
+                        ).distinct().first()
                     elif student_pk:
-                        student = Student.objects.get(id=student_pk, class_room=session.class_room)
+                        student = Student.objects.filter(
+                            Q(classrooms=session.class_room) | Q(class_room=session.class_room),
+                            id=student_pk
+                        ).distinct().first()
                     else:
                         errors.append("Provide either student_id or student_pk.")
                         continue
-                except Student.DoesNotExist:
-                    errors.append(f"Student {student_id or student_pk} not found in this classroom.")
+
+                    if not student:
+                        errors.append(f"Student {student_id or student_pk} not found in this classroom.")
+                        continue
+                except Exception as exc:
+                    errors.append(f"Error fetching student {student_id or student_pk}: {exc}")
                     continue
 
                 AttendanceRecord.objects.update_or_create(
@@ -1167,6 +1188,16 @@ class FaceEnrollView(APIView):
         if enrolled_count > 0:
             target_student.consent_given_at = timezone.now()
             target_student.save(update_fields=["consent_given_at", "updated_at"])
+            try:
+                from students.models import FaceEmbedding
+                first_sf = target_student.face_embeddings.first()
+                if first_sf:
+                    FaceEmbedding.objects.update_or_create(
+                        student=target_student,
+                        defaults={"vector": first_sf.embedding, "model_name": "approved-onnx-model"}
+                    )
+            except Exception:
+                pass
 
         return Response({
             "message": f"Successfully enrolled {enrolled_count} face template(s).",
@@ -1316,6 +1347,7 @@ class FaceCheckInView(APIView):
             fifteen_mins_ago = now - datetime.timedelta(minutes=15)
             conflicting_checkin = AttendanceRecord.objects.filter(
                 student=best_student,
+                status__in=["present", "late"],
                 checked_in_at__gte=fifteen_mins_ago,
                 is_deleted=False
             ).exclude(session=session).select_related("session__class_room").first()
@@ -1582,10 +1614,14 @@ class StudentReportView(APIView):
         total = counts["total_records"] or 1
         present_pct = round((counts["present_count"] / total) * 100, 1) if counts["total_records"] else 0.0
 
+        enrolled_classes = student.get_enrolled_classrooms()
+        primary_class = student.class_room or enrolled_classes.first()
+
         return Response({
             "student_id": student.student_id,
             "student_name": student.full_name,
-            "class_room": student.class_room.name if student.class_room else None,
+            "class_room": primary_class.name if primary_class else None,
+            "classrooms": [c.name for c in enrolled_classes],
             "total_recorded_sessions": counts["total_records"],
             "present_count": counts["present_count"],
             "late_count": counts["late_count"],

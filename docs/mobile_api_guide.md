@@ -49,12 +49,16 @@ class ApiConstants {
 
   // Teacher Endpoints
   static const String teacherClasses = '/teacher/classes/today/';
+  static const String teacherClassrooms = '/teacher/classrooms/';
+  static String teacherClassroomStudents(int classId) => '/teacher/classrooms/$classId/students/';
   static const String teacherSessions = '/teacher/sessions/';
   static String teacherRoster(int sessionId) => '/teacher/sessions/$sessionId/roster/';
   static String teacherLiveFeed(int sessionId) => '/teacher/sessions/$sessionId/live-feed/';
   static String teacherBulkAttendance(int sessionId) => '/teacher/sessions/$sessionId/attendance/bulk/';
   static String teacherDynamicQr(int sessionId) => '/teacher/sessions/$sessionId/qr/dynamic/';
   static String teacherEndSession(int sessionId) => '/teacher/sessions/$sessionId/end/';
+  static String teacherReopenSession(int sessionId) => '/teacher/sessions/$sessionId/reopen/';
+  static String teacherCancelSession(int sessionId) => '/teacher/sessions/$sessionId/cancel/';
   static String teacherOverride(int recordId) => '/teacher/attendance/$recordId/';
   static String exportCsv(int classId) => '/reports/class/$classId/export-csv/';
 }

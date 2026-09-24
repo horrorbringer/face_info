@@ -1,159 +1,241 @@
-# System Capabilities — Smart Attendance System
+# System Features & Capabilities Specification
 
-This document outlines all features, operational capabilities, and services currently supported by the Smart Attendance System.
-
----
-
-## 1. Attendance Check-In (3 Supported Methods)
-
-### A. Dynamic QR Code Check-In
-- **Endpoint:** `POST /api/attendance/checkin/qr/`
-- **Payload:** `{ "qr_token": "<token>" }`
-- **Capabilities:**
-  - **Dynamic Expiration:** QR codes are session-bound and expire automatically (default: 10 minutes).
-  - **On-Demand Rotation:** Teachers can rotate/refresh the QR code anytime from their app or dashboard.
-  - **Smart Cutoff Calculation:**
-    - If checked in within `LATE_THRESHOLD_MINUTES` (default: 15 mins) of class start: recorded as **`Present`**.
-    - If checked in after the threshold: recorded as **`Late`**.
-  - **Idempotency:** Re-scanning the QR code returns the existing confirmed check-in without creating duplicate records.
-  - **Class Validation:** Students can only check in to classes they are actively enrolled in.
-
-### B. Face Recognition Check-In
-- **Endpoint:** `POST /api/attendance/checkin/face/`
-- **Payload:** Multipart form data (`image: <frame>`, optional `session_id: <id>`)
-- **Capabilities:**
-  - **Optimized Search Space:** Compares live capture embeddings only against active students enrolled in that session's classroom, keeping lookup time fast.
-  - **Cosine Similarity Threshold:** Matches against stored embeddings using `MATCH_THRESHOLD` (default: `0.5`).
-  - **Low-Confidence Fallback:** Does not guess if confidence is below threshold; returns a friendly response directing the student to use QR check-in or request teacher assistance.
-  - **Privacy by Design:** Camera frames are parsed directly in RAM using OpenCV and **never written to disk or the database**.
-  - **Note on v1 Scope:** Liveness detection (anti-spoofing) is out of scope for v1.
-
-### C. Manual Teacher Overrides & Audits
-- **Endpoint:** `PATCH /api/teacher/attendance/{id}/`
-- **Payload:** `{ "status": "present" | "late" | "absent", "is_deleted": true | false }`
-- **Capabilities:**
-  - Teachers can correct any attendance record.
-  - **Audit Stamp:** Automatically assigns `edited_by = request.user` for traceability.
-  - **Soft Deletion:** Records are soft-deleted (`is_deleted=True`) rather than permanently purged.
+This document provides a comprehensive, production-grade reference for all features, operational capabilities, architectural designs, and security mechanisms implemented in the **Smart Attendance & Face Recognition System**.
 
 ---
 
-## 2. Automated Absence Notifications (Celery + Background Workers)
+## 🏗️ 1. Architecture & Technology Stack
 
-- **Trigger Endpoint:** `POST /api/teacher/sessions/{id}/end/`
-- **Capabilities:**
-  - **One-Click Closure:** The teacher ends the class session, timestamping `ended_at = now()`.
-  - **Non-Blocking Execution:** Hands off absence checking and notifications to an asynchronous **Celery worker** via Redis broker.
-  - **Automated Absence Marking:** Active students enrolled in the class without an existing attendance record are marked **`Absent`**.
-  - **Multi-Channel Dispatch:**
-    1. **Telegram Bot API:** Dispatches formatted absence notices to the guardian's chat ID or Telegram handle.
-    2. **SMTP Email Fallback:** If Telegram contact is unavailable, dispatches an email notice to the guardian's email address.
-  - **Idempotent Audit Log (`AlertLog`):**
-    - Tracks delivery status (`sent` or `failed`) with exact error messages.
-    - Prevents double-sending notifications if a session is processed multiple times.
+The platform is designed as an asynchronous, containerized, micro-service-ready architecture supporting mobile devices, web terminals, and dedicated gate kiosks.
 
----
-
-## 3. Biometric Face Enrollment
-
-Biometric enrollment can be performed via either the REST API (for mobile/external integrations) or the interactive Staff Web Portal.
-
-### A. REST API Endpoint
-- **Endpoint:** `POST /api/face/enroll/`
-- **Payload:** Multipart form data (`images: [<file1>, <file2>, ...]`, optional `student_id`)
-- **Capabilities:**
-  - **Multi-Angle Support:** Supports uploading 1 to 5 face photos at different angles for improved recognition accuracy.
-  - **Embedding Extraction:** Extracts normalized 512-dimensional facial embeddings using InsightFace and saves them to `StudentFace`.
-  - **Consent Logging:** Automatically stamps `consent_given_at = now()`.
-
-### B. Staff Web Portal (`/students/<student_id>/enroll/`)
-- **Web Interface:** Interactive Bootstrap 5 enrollment studio for staff members with `students.change_student` permission.
-- **Capabilities:**
-  - **Live Webcam Studio:** In-browser camera viewfinder with an oval face-positioning guide, angle selector (`Front`, `Slight Left`, `Slight Right`, `Slight Up`), and frame snapshot gallery capturing 1 to 5 biometric angles.
-  - **File Upload Fallback:** File chooser with instant client-side thumbnail previews.
-  - **Dual-Model Synchronization:** Simultaneously saves templates into both `attendance.models.StudentFace` (enabling attendance face check-in) and `students.models.FaceEmbedding` (enabling kiosk cosine matching).
-  - **Consent & Compliance Certification:** Requires entering a consent document reference and checking a mandatory certification box before biometric template generation.
-  - **Safe Revocation:** Displays enrollment status badge (`✓ Enrolled (N templates)` vs `Not Enrolled`). Includes a guarded Bootstrap confirmation modal and standalone confirmation page (`/students/<student_id>/revoke/`) to permanently purge all facial templates from the database.
-
----
-
-## 4. Teacher & Classroom Operations
-
-- **Today's Classes:** `GET /api/teacher/classes/today/`
-  - Fetches all sessions scheduled for today for the authenticated teacher.
-- **Dynamic QR Code Generation:** `POST /api/teacher/sessions/{id}/qr/`
-  - Generates a cryptographically secure 32-byte token with configurable expiration minutes.
-- **Live Attendance Feed (Polling/Real-time):** `GET /api/teacher/sessions/{id}/live-feed/`
-  - Returns real-time attendance counters (`total_enrolled`, `checked_in_count`, `present_count`, `late_count`, `absent_count`, `unmarked_count`) and recent check-in events (`recent_checkins`).
-  - Supports incremental polling via `?since=<ISO_TIMESTAMP>`.
-- **Session Finalization:** `POST /api/teacher/sessions/{id}/end/`
-  - Marks class closed and triggers background alerts.
+```text
+               ┌────────────────────────────────────────────────────────┐
+               │                     Client Layer                       │
+               │   • Flutter Mobile App (Students & Teachers)           │
+               │   • Web Kiosk Station (Entrance Biometric Camera)      │
+               │   • Staff Web Portal & Django Admin                    │
+               └───────────────────────────┬────────────────────────────┘
+                                           │ HTTPS (Port 443)
+                                           ▼
+               ┌────────────────────────────────────────────────────────┐
+               │           Nginx SSL Reverse Proxy & Static Host        │
+               │   • Let's Encrypt / Cloudflare SSL Termination         │
+               │   • Upstream Buffering & 120s Read Timeout             │
+               └───────────────────────────┬────────────────────────────┘
+                                           │ HTTP/1.1 (Port 8000)
+                                           ▼
+               ┌────────────────────────────────────────────────────────┐
+               │          Django 5.0 REST Backend (Gunicorn gthread)     │
+               │   • 2 Workers, 4 Threads per Worker (Memory-Efficient) │
+               │   • Connection Pooling (CONN_MAX_AGE = 60s)            │
+               │   • InsightFace Biometric Engine (512D Embeddings)     │
+               └──────────────┬──────────────────────────┬──────────────┘
+                              │                          │
+                              ▼                          ▼
+               ┌────────────────────────┐      ┌────────────────────────┐
+               │   PostgreSQL 16 DB     │      │   Redis 7 In-Memory    │
+               │   (pgvector Enabled)   │      │   • Celery Task Broker │
+               │   • Relational Schema  │      │   • Device Anti-Hopping│
+               │   • Composite Indexes  │      │   • Cache Layer        │
+               └────────────────────────┘      └───────────┬────────────┘
+                                                           │
+                                                           ▼
+                                               ┌────────────────────────┐
+                                               │ Celery & Celery Beat   │
+                                               │   • Absence Dispatch   │
+                                               │   • Telegram / Email   │
+                                               │   • Lifecycle Manager  │
+                                               └────────────────────────┘
+```
 
 ---
 
-## 5. Student Self-Service
+## 👥 2. Authentication, Roles & Multi-Teacher Authorization
 
-- **Student Profile:** `GET /api/students/me/`
-  - Fetches student ID, name, classroom name, guardian contact, and face enrollment count.
-- **Attendance History:** `GET /api/attendance/history/`
-  - Retrieves personal attendance records across all past sessions.
+### 2.1 Multi-Mode Authentication
+* **Token Authentication:** Cryptographic DRF tokens returned via `POST /api/auth/login/` for Flutter mobile apps and API clients.
+* **Flexible Authorization Header Support:** Supports both `Authorization: Token <key>` and standard `Authorization: Bearer <key>`.
+* **Session Authentication:** Django cookie-based sessions for the staff web portal and administration dashboard.
+* **Graceful Revocation:** `POST /api/auth/logout/` invalidates the active user token immediately.
 
----
-
-## 6. Analytics & Attendance Reports
-
-- **Classroom Report (JSON):** `GET /api/reports/class/{id}/`
-  - Total enrolled students.
-  - Total sessions held.
-  - Present count & percentage.
-  - Late count & percentage.
-  - Absence count & percentage.
-- **Classroom Attendance Export (CSV):** `GET /api/reports/class/{id}/export-csv/`
-  - Downloads full attendance roster records as a CSV file (`Session Date, Classroom, Session Time, Student ID, Full Name, Status, Check-In Method, Checked In At, Confidence Score, Edited By`).
-  - Supports optional date filtering query parameters: `?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD`.
-  - Accessible by authenticated teachers and administrators.
-- **Student Report:** `GET /api/reports/student/{id}/`
-  - Total recorded sessions for the student.
-  - Individual attendance rate (%) and status breakdown.
+### 2.2 Role-Based Access Control (RBAC)
+1. **Student:** Access limited to personal schedule (`/api/students/schedule/today/`), personal profile (`/api/students/me/`), check-in history (`/api/attendance/history/`), and check-in endpoints.
+2. **Teacher (Primary):** Owns classrooms, schedules sessions, generates dynamic QR codes, monitors real-time rosters, overrides attendance, and exports class reports.
+3. **Co-Teacher (Assistant / Substitute):**
+   * Configured via `ClassRoom.co_teachers = ManyToManyField(Teacher)`.
+   * Authorized to manage classrooms, start/end sessions, generate rotating QR codes, inspect live rosters, and edit attendance records seamlessly if the primary teacher is unavailable.
+4. **Staff / Administrator:** Full global access to all classrooms, audit logs, student rosters, biometric revocations, and system health monitors.
 
 ---
 
-## 7. Operational & Diagnostic CLI Tools
+## 🏫 3. Student Enrollment & Multi-Classroom Architecture
 
-- **Telegram Bot Health & Notification Diagnostic:**
-  - Command: `python manage.py test_telegram [--chat-id <CHAT_ID>] [--token <BOT_TOKEN>]`
-  - Validates bot token with Telegram's `getMe` API.
-  - Dispatches a formatted test broadcast message with timestamp and server host details to verify webhook/outbound connectivity.
+### 3.1 Multi-Classroom Student Enrollment
+Students are no longer restricted to a single class:
+* **Many-to-Many Enrollment:** Model field `Student.classrooms = ManyToManyField("attendance.ClassRoom")` enables a student to attend courses across multiple departments, lab sections, or grades simultaneously.
+* **Backward Compatibility:** Preserves legacy `Student.class_room` foreign key as a primary classroom fallback.
+* **Unified Enrollment Helpers:**
+  * `student.get_enrolled_classrooms()`: Queries all classrooms linked to the student across both relationship types.
+  * `student.is_enrolled_in(classroom)`: O(1) cached membership check preventing unauthorized attendance scans.
+  * `classroom.get_enrolled_students(active_only=True)`: Resolves the complete student roster for any class.
 
+### 3.2 Teacher Classroom Student Management API
+Teachers can manage course enrollments directly from mobile or web without requiring staff superadmin intervention:
+* **List Enrolled Students:** `GET /api/teacher/classrooms/<id>/students/`
+* **Enroll Student by ID:** `POST /api/teacher/classrooms/<id>/students/` with payload `{"student_id": "STU1001"}`.
+* **Unenroll Student:** `DELETE /api/teacher/classrooms/<id>/students/` with payload `{"student_id": "STU1001"}`.
 
----
-
-## 8. Web Portals & Administrative Tools (Target Audiences)
-
-The Web Portal is designed for **School Staff, Teachers, and Administrators**:
-
-1. **Gate / Entrance Kiosk Station (`/`):**
-   - **Audience:** Kiosk operators, security guards, or unattended mounted tablets at entrance doors.
-   - **Features:** Automated hands-free scanning, real-time multi-factor anti-spoofing (3D depth curvature, FFT moiré, temporal movement), interactive active challenges (blink/head turn), Web Audio melodic chime feedback with mute toggle, IP-based anti-hammering rate limiting, station/classroom filter dropdown, and instant attendance confirmation.
-2. **Student Management & Biometric Studio (`/students/`):**
-   - **Audience:** Class teachers, registrars, and enrollment officers.
-   - **Features:** 
-     - **Face Enrollment Studio (`/students/<id>/enroll/`)**: Capture 1–3 camera angles with documented privacy consent.
-     - **Manual Lookup (`/students/lookup/`)**: ID/Name search fallback when students cannot scan their face.
-     - **Biometric Revocation (`/students/<id>/revoke/`)**: GDPR/FERPA permanent biometric template deletion upon consent withdrawal.
-     - **Roster CSV Import (`/students/import/`)**: Batch upload student directories.
-3. **Staff Admin Dashboard (`/admin/`):**
-   - **Audience:** School principals, academic coordinators, and IT administrators.
-   - **Features:** 
-     - Full CRUD for Teachers, Classrooms, Schedules, Courses, and Attendance Policies.
-     - Attendance auditing, override history, and `LookupAuditLog` review for spoof attempts.
-     - Telegram Bot absence notification settings and guardian contact management.
+### 3.3 Bulk Student Roster Import
+* **Endpoint / Portal:** `/students/import/`
+* Accepts CSV files containing `student_id, full_name, class_year, guardian_contact, guardian_email, guardian_phone, guardian_telegram_id` to register entire cohorts in seconds.
 
 ---
 
-## 9. Supported Client Integrations
+## 📸 4. Attendance Check-In Subsystems
 
-The system exposes clean REST endpoints consumable by:
-- **Flutter Mobile Apps** (Student & Teacher mobile clients via Token Authentication).
-- **Web Applications** (Via Session or Token Authentication).
-- **Kiosk Hardware** (Camera terminal for entrance/gate check-in).
+### 4.1 Method A: Dynamic Rotating QR Code (Anti-Cheat & Projector View)
+* **Endpoint:** `POST /api/attendance/checkin/qr/`
+* **Payload:** `{ "qr_token": "dyn_<session_id>_<hmac_token>", "device_id": "<uuid>" }`
+* **Features:**
+  1. **TOTP-Style Cryptographic Tokens:** Dynamic tokens rotate every 20 seconds using HMAC-SHA256 based on the session ID, secret key, and current time step.
+  2. **Classroom Projector Mode (`/teacher/sessions/<id>/live-qr/`):** Fullscreen responsive web interface designed to project the live QR code on classroom display boards with a live countdown ring.
+  3. **Anti-Replay Window:** Validates token against current and previous time windows to allow for minor network latency while rejecting stale photos taken by absent students.
+  4. **Dynamic Expiration & Fallback:** Supports static 32-byte URL-safe tokens with explicit expiration timestamps (`SessionRotateQRView`).
+
+### 4.2 Method B: Biometric Face Recognition
+* **Endpoint:** `POST /api/attendance/checkin/face/`
+* **Payload:** Multipart form data (`image: <camera_frame>`, `session_id: <id>`, `device_id: <uuid>`)
+* **Features:**
+  1. **SIMD & Vectorized Cosine Matching:** Normalized 512-dimensional facial embeddings extracted using InsightFace (ArcFace / MobileFaceNet ONNX).
+  2. **Bounded Search Scope:** Pre-filters student candidates strictly to students enrolled in that specific session's classroom, keeping matching times under **10 milliseconds**.
+  3. **Automated Frame Normalization:** Incoming camera frames exceeding 1280px are automatically downscaled before ONNX inference, preventing memory bloat and Gunicorn OOM worker crashes.
+  4. **Confidence Thresholding:** Validated against `MATCH_THRESHOLD = 0.5`. Low-confidence matches are rejected with guidance to use QR code or request teacher manual check-in.
+  5. **Zero Frame Persistence:** Raw camera frames are processed entirely in ephemeral RAM and never saved to disk or database.
+
+### 4.3 Method C: Manual Overrides & Bulk Marking
+* **Individual Override:** `PATCH /api/teacher/attendance/<record_id>/`
+  * Payload: `{"status": "present" | "late" | "absent", "is_deleted": false}`
+  * Automatically stamps `edited_by = request.user` for regulatory auditability.
+* **Bulk Attendance Marker:** `POST /api/teacher/sessions/<session_id>/attendance/bulk/`
+  * Allows teachers to mark the entire class present or absent with a single request.
+
+### 4.4 Method D: Unattended Entrance Kiosk Station
+* **Web Portal:** Station URL `/`
+* **Features:** Hands-free continuous camera scanning, multi-factor anti-spoofing heuristics (frequency moiré analysis, 3D curvature, temporal eye blink challenges), melodic chime feedback via Web Audio API, and gate check-in logging.
+
+---
+
+## 🛡️ 5. Anti-Cheat & Security Mechanisms
+
+| Mechanism | Description | Mitigation |
+| :--- | :--- | :--- |
+| **Device Anti-Hopping** | Binds `device_id` to student ID in Redis (`session_device:<session_id>:<device_id>`) for 12 hours. | Prevents one student with multiple phones from punching in absent friends ("Buddy Punching"). |
+| **Impossible Travel Guard** | Checks if student checked into another classroom located elsewhere within the last 15 minutes. | Prevents simultaneous proxy check-ins across multiple classrooms. |
+| **Cloudflare IP Spoof Guard** | Uses `HTTP_CF_CONNECTING_IP` over untrusted client-supplied `X-Forwarded-For` headers. | Prevents remote students from spoofing allowed campus Wi-Fi IPs behind Cloudflare reverse proxies. |
+| **Cancelled Session Guard** | Blocks rotating dynamic QR codes (`SESSION_CANCELLED`) on cancelled sessions. | Prevents teachers from accidentally accepting attendance on cancelled sessions. |
+| **Multi-Class Bulk Attendance** | Validates students across both `classrooms` (M2M) and legacy `class_room`. | Ensures teachers can bulk-mark all enrolled students regardless of enrollment method. |
+| **Campus Wi-Fi Whitelist** | Compares client IP against `ATTENDANCE_ALLOWED_SUBNETS` (CIDR blocks). | Prevents remote students at home from scanning QR code screenshots sent via chat apps. |
+| **Rotating QR Tokens** | Re-hashes token every 20 seconds. | Renders photos taken of the classroom projector screen invalid before they can be forwarded. |
+
+---
+
+## ⏱️ 6. Session Lifecycle & Precision Time Tracking
+
+### 6.1 Accurate Session Lifecycle Fields
+* **`started_at` (DateTimeField):** Stamped the exact moment a teacher activates or rotates the session QR code or projects the live screen.
+* **`ended_at` (DateTimeField):** Stamped when the session is closed by the teacher or auto-closed by Celery.
+* **`is_cancelled` (BooleanField):** Flags sessions cancelled due to holidays, severe weather, or teacher absence.
+
+### 6.2 Precision Late Calculation
+Eliminates all guesswork. Arrival status is calculated dynamically:
+$$\text{Late Cutoff} = (\text{session.started\_at} \lor \text{session.start\_time}) + \text{LATE\_THRESHOLD\_MINUTES}$$
+* Check-in time $\le \text{Late Cutoff} \implies$ **`Present`**.
+* Check-in time $> \text{Late Cutoff} \implies$ **`Late`**.
+
+### 6.3 Scheduling Overlap & Conflict Detection
+When teachers create sessions via `POST /api/teacher/sessions/`:
+1. **Physical Classroom Overlap:** Prevents scheduling two classes in the same physical room simultaneously.
+2. **Teacher Schedule Conflict:** Prevents a teacher (or co-teacher) from being double-booked in two different classrooms at the same time.
+
+### 6.4 Session Reopen & Cancellation
+* **Reopen Grace Window:** `POST /api/teacher/sessions/<id>/reopen/` allows reopening an accidentally closed class within 30 minutes.
+* **Safe Cancellation:** `POST /api/teacher/sessions/<id>/cancel/` marks the session cancelled and prevents false absence alerts from dispatching to parents.
+
+---
+
+## 📢 7. Automated Absence Alerts & Background Tasks
+
+### 7.1 Automated Notification Dispatch
+When a session is ended (`POST /api/teacher/sessions/<id>/end/`):
+1. **Non-Blocking Hand-off:** Session status updates immediately; background dispatch is handed off to **Celery** (with automated fallback to a detached daemon thread if Celery is offline).
+2. **Missing Student Detection:** All active students enrolled in the class without an existing `AttendanceRecord` are recorded with:
+   * `status = "absent"`
+   * `method = "system"`
+   * `checked_in_at = None` (preserves data truth: absent students never checked in).
+3. **Multi-Channel Dispatch:**
+   * **Telegram Bot:** Formatted HTML notice dispatched via Telegram Bot API using persistent connection pooling.
+   * **Email Fallback:** Sent via SMTP to `student.effective_guardian_email`.
+4. **Idempotent Audit Log (`AlertLog`):** Logs channel, status (`sent` or `failed`), timestamp, and exact error message, preventing duplicate messages if tasks retry.
+
+### 7.2 Structured Guardian Contact Model
+* **`guardian_email`:** Dedicated validated email field.
+* **`guardian_phone`:** Formatted phone number.
+* **`guardian_telegram_id`:** Numerical Telegram chat ID.
+* **Backward-Compatible Fallback:** Property getters `effective_guardian_email` and `effective_guardian_telegram_id` automatically parse legacy `guardian_contact` strings.
+
+### 7.3 Celery Beat Lifecycle Daemon
+* **Task:** `attendance.tasks.auto_manage_session_lifecycle` runs every 60 seconds.
+* **Auto-Start:** Automatically activates scheduled classes when current time reaches `start_time`.
+* **Auto-Close:** Automatically ends abandoned sessions when `current_time > end_time` and triggers absence alerts without teacher intervention.
+
+---
+
+## 📊 8. Analytics & Reporting
+
+1. **Real-Time Polling Live Feed:**
+   * Endpoint: `GET /api/teacher/sessions/<id>/live-feed/?since=<timestamp>`
+   * Returns live counters: `total_enrolled`, `present_count`, `late_count`, `absent_count`, `unmarked_count`, and incremental check-in events.
+2. **Classroom Aggregate Report:**
+   * Endpoint: `GET /api/reports/class/<class_id>/`
+   * Computes attendance rates, percentage distributions, and total sessions conducted.
+3. **Official CSV Roster Export:**
+   * Endpoint: `GET /api/reports/class/<class_id>/export-csv/`
+   * Generates downloadable spreadsheet with complete audit logs (`Date, Class, Time, Student ID, Name, Status, Method, Checked In At, Confidence, Edited By`).
+4. **Individual Student Report:**
+   * Endpoint: `GET /api/reports/student/<student_id>/`
+   * Accessible by the student, their assigned teachers, or staff.
+
+---
+
+## 🩺 9. System Health & Observability
+
+* **Live Deep Health Check:** `GET /api/health/`
+  * Checks PostgreSQL connection (`SELECT 1`).
+  * Checks Redis ping.
+  * Checks InsightFace model runtime status (`face_recognition: ready`).
+  * Returns `HTTP 200` when healthy; returns `HTTP 503` with service diagnostics if any dependency fails.
+* **API Documentation & Schema:**
+  * Interactive Swagger / ReDoc: `GET /api/docs/`
+  * OpenAPI 3.0 JSON Schema: `GET /api/schema/`
+* **Diagnostic CLI Tools:**
+  * `python manage.py test_telegram`: Verifies Telegram Bot API credentials and sends a test broadcast.
+  * `python manage.py seed_roles_and_users`: Provisions demo teachers, students, classrooms, and sessions.
+
+---
+
+## 📱 10. Flutter Mobile Client Integration
+
+The Flutter mobile application (`horrorbringer/class_attendance`) connects to these endpoints providing dual interfaces:
+
+### Student Experience
+* **Home Dashboard:** Displays enrolled classes, today's schedule, and live check-in cards.
+* **QR Scanner:** Integrated camera scanner with instant haptic feedback and device ID transmission.
+* **Attendance History:** Chronological log of past attendance records with status filters.
+* **Profile & Settings:** View registered guardian contact info, biometric enrollment status, and password change.
+
+### Teacher Experience
+* **Today's Teaching Schedule:** List of classes assigned to the primary teacher or co-teacher.
+* **Session Controller:** Create sessions with overlap validation, rotate QR codes, or open projector display.
+* **Live Roster Screen:** Color-coded roster cards (Present, Late, Absent, Unmarked) with one-tap status overrides.
+* **Course Student Manager:** Add or remove enrolled students by Student ID.
+* **Reports Screen:** View classroom attendance rate percentages and trigger CSV downloads.
