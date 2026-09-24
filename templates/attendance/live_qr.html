@@ -534,9 +534,9 @@
       </div>
       <h1 class="p-title">{{ class_room.name }}</h1>
       <p class="p-subtitle">
-        {% if teacher %}Teacher: <strong>{{ teacher.get_full_name|default:teacher.username }}</strong> &bull; {% endif %}
+        {% if teacher %}Teacher: <strong>{{ teacher.name|default:teacher }}</strong> &bull; {% endif %}
         {{ session.date|date:"l, M d, Y" }} &bull; {{ session.start_time|time:"H:i" }} - {{ session.end_time|time:"H:i" }}
-        {% if class_room.room_number %}&bull; Room: {{ class_room.room_number }}{% endif %}
+        {% if class_room.room %}&bull; Room: {{ class_room.room }}{% endif %}
       </p>
     </div>
 
@@ -587,13 +587,7 @@
     <div class="p-stat-item">
       <div class="p-stat-icon" style="color: #fbbf24;">⏳</div>
       <div>
-        <div class="p-stat-val text-warning" id="pendingCountVal">
-          {% if enrolled_count and present_count %}
-            {{ enrolled_count|add:"-1" }}
-          {% else %}
-            0
-          {% endif %}
-        </div>
+        <div class="p-stat-val text-warning" id="pendingCountVal">0</div>
         <div class="p-stat-lbl">Pending</div>
       </div>
     </div>
