@@ -490,6 +490,66 @@ class TeacherTodayClassesView(APIView):
         return Response(serializer.data)
 
 
+class TeacherClassRoomListCreateView(APIView):
+    """
+    GET /api/teacher/classrooms/
+    Returns all classrooms assigned to the authenticated teacher (or all for staff).
+
+    POST /api/teacher/classrooms/
+    Creates a new classroom assigned to the authenticated teacher.
+    Payload: {"name": "Machine Learning Lab"}
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        if not is_authorized_teacher_or_staff(request.user):
+            return Response(
+                {"error": "Only teachers and staff can access classrooms.", "code": "UNAUTHORIZED"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        teacher_profile = getattr(request.user, "teacher_profile", None)
+        if teacher_profile and request.query_params.get("all") != "true":
+            classrooms = ClassRoom.objects.filter(teacher=teacher_profile).select_related("teacher").order_by("name")
+        else:
+            classrooms = ClassRoom.objects.all().select_related("teacher").order_by("name")
+
+        serializer = ClassRoomSerializer(classrooms, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        if not is_authorized_teacher_or_staff(request.user):
+            return Response(
+                {"error": "Only teachers and staff can create classrooms.", "code": "UNAUTHORIZED"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        name = request.data.get("name", "").strip()
+        if not name:
+            return Response(
+                {"error": "Class name is required.", "code": "INVALID_NAME"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        teacher_profile = getattr(request.user, "teacher_profile", None)
+        if not teacher_profile and not request.user.is_staff:
+            return Response(
+                {"error": "No associated teacher profile found for this user.", "code": "TEACHER_PROFILE_MISSING"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        existing = ClassRoom.objects.filter(name__iexact=name, teacher=teacher_profile).first()
+        if existing:
+            return Response(ClassRoomSerializer(existing).data, status=status.HTTP_200_OK)
+
+        classroom = ClassRoom.objects.create(
+            name=name,
+            teacher=teacher_profile
+        )
+
+        return Response(ClassRoomSerializer(classroom).data, status=status.HTTP_201_CREATED)
+
+
 class SessionRotateQRView(APIView):
     """
     POST /api/teacher/sessions/{id}/qr/

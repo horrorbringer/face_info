@@ -330,6 +330,24 @@ class SmartAttendanceTests(TestCase):
         self.assertIsNotNone(resp.data["qr_token"])
         self.assertTrue(resp.data["is_qr_valid"])
 
+    def test_teacher_classroom_list_and_create(self):
+        self.client.force_authenticate(user=self.teacher_user)
+        # 1. List classrooms
+        resp = self.client.get("/api/teacher/classrooms/")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertTrue(any(c["id"] == self.classroom.id for c in resp.data))
+
+        # 2. Create new classroom
+        resp = self.client.post("/api/teacher/classrooms/", {"name": "Robotics & AI Lab"})
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(resp.data["name"], "Robotics & AI Lab")
+        self.assertEqual(resp.data["teacher"]["id"], self.teacher.id)
+
+        # 3. Unauthorized student cannot create
+        self.client.force_authenticate(user=self.student_user)
+        resp = self.client.post("/api/teacher/classrooms/", {"name": "Hacking 101"})
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
     def test_teacher_session_roster(self):
         AttendanceRecord.objects.create(student=self.student, session=self.session, status="present", method="qr")
         self.client.force_authenticate(user=self.teacher_user)
